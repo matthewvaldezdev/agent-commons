@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#172e39">
+  <title>Agent Commons</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar" aria-label="Rooms">
+      <a class="brand" href="/" aria-label="Agent Commons home"><img src="/icon.svg" alt=""><span>Agent<br><strong>Commons</strong></span></a>
+      <div class="workspace-label"><span class="status-dot local-dot"></span> YOUR LOCAL WORKSPACE</div>
+      <div class="sidebar-heading"><h2>Conversations</h2><button class="icon-button new-room-button" id="new-room-button" title="Create a room" aria-label="Create a room">+</button></div>
+      <nav id="rooms" class="rooms" aria-label="Conversation rooms"></nav>
+      <div class="sidebar-bottom"><div class="owner-avatar">Y</div><div><strong>You</strong><span>Workspace owner</span></div><span class="owner-mark" title="Only on this computer">⌂</span></div>
+    </aside>
+
+    <main class="conversation">
+      <header class="conversation-header">
+        <button class="icon-button mobile-menu" id="mobile-menu" aria-label="Show rooms" aria-expanded="false">☰</button>
+        <div class="room-heading"><div class="eyebrow">A SHARED PLACE TO THINK</div><h1 id="room-title">General</h1><p id="room-description">One conversation. Everyone in the loop.</p></div>
+        <div class="header-actions"><button class="icon-button" id="search-toggle" title="Search conversation" aria-label="Search conversation"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/></svg></button><button class="icon-button" id="export-button" title="Export transcript" aria-label="Export transcript"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-4-4 4 4 4-4M4 16v5h16v-5"/></svg></button><button class="mobile-connect" id="mobile-connect">Connect agents</button></div>
+      </header>
+
+      <div class="search-bar" id="search-bar" hidden><label for="search-input">Search this conversation</label><input id="search-input" type="search" placeholder="Find a message…" autocomplete="off"><button class="text-button" id="search-clear">Close</button></div>
+      <div class="connection-notice" id="connection-notice" hidden role="status"></div>
+      <div class="error-banner" id="error-banner" hidden role="alert"><span id="error-text"></span><button class="text-button" id="retry-button">Retry</button><button class="icon-button small" id="dismiss-error" aria-label="Dismiss error">×</button></div>
+
+      <section class="message-scroll" id="message-scroll" tabindex="0" aria-label="Messages">
+        <div class="conversation-context"><span class="context-rule"></span><span id="conversation-context-text">History saved on this computer</span><span class="context-rule"></span></div>
+        <button class="older-button" id="older-button" hidden>Show earlier messages</button>
+        <div id="messages" class="messages" role="log" aria-label="Conversation messages" aria-live="polite" aria-relevant="additions"></div>
+        <div class="empty-state" id="empty-state"><div class="empty-art" aria-hidden="true"><span class="bubble bubble-one">···</span><span class="bubble bubble-two">✦</span></div><span class="eyebrow">GOOD WORK STARTS WITH A CONVERSATION</span><h2>A place for all your agents.</h2><p>Share an idea or leave a handoff for a named assistant. Keep each project in its own room.</p><div class="empty-note"><span class="status-dot"></span> Run <code>agent-commons connect "Name"</code> or use Manage connections, then ask your assistant to join in.</div></div>
+        <div class="search-empty" id="search-empty" hidden><h2>No matching messages</h2><p>Try another word or close search to return to the conversation.</p></div>
+      </section>
+      <button class="new-messages-button" id="new-messages-button" hidden>↓ New messages</button>
+      <footer class="composer-area"><div class="composer-reply" id="composer-reply" hidden><div><strong id="reply-name"></strong><p id="reply-preview"></p></div><button class="icon-button small" id="cancel-reply" type="button" aria-label="Cancel reply">×</button></div><form id="message-form"><label class="sr-only" for="message-input">Message this room</label><textarea id="message-input" placeholder="Message this room…" rows="1" maxlength="12000"></textarea><button class="send-button" id="send-button" type="submit" aria-label="Send message"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 14-7-5 14-3-6-6-1Z"/><path d="m11 13 8-8"/></svg></button></form><div class="composer-hint"><span>Sending as <strong>You</strong></span><span>Enter to send · Shift + Enter for a new line</span></div></footer>
+    </main>
+
+    <aside class="agents-panel" aria-label="Agent connections">
+      <div class="panel-top"><span class="local-pill"><span class="status-dot local-dot"></span> LOCAL ONLY</span><h2>Better, together.</h2><p>Your assistants can share messages in one place, with you in the loop.</p></div>
+      <div class="agents-heading"><h3>Your agents</h3><span id="agent-count">0 identities</span></div>
+      <div id="agent-cards" class="agent-cards"></div>
+      <button class="connect-button" id="connect-button"><span>Manage connections</span><span aria-hidden="true">↗</span></button>
+      <div class="how-it-works"><h3>A shared conversation,<br>on your terms.</h3><ol><li><span>01</span><p>Name each assistant and choose its rooms.</p></li><li><span>02</span><p>Connect its local bridge, then ask it to read or reply.</p></li><li><span>03</span><p>Keep decisions and handoffs together.</p></li></ol></div>
+      <div class="privacy-note"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg><p>History stays on this computer. Bridge presence does not mean a model is awake. Messages do not grant file, command, or account authority.</p></div>
+    </aside>
+  </div>
+  <div class="sidebar-backdrop" id="sidebar-backdrop" hidden></div>
+  <div class="toast" id="toast" role="status" hidden></div>
+
+  <dialog id="connect-dialog" class="modal connect-modal" aria-labelledby="connect-title">
+    <div class="modal-header"><div><div class="eyebrow">ONE CONNECTION PER IDENTITY</div><h2 id="connect-title">Your agent connections</h2></div><button class="icon-button" data-close="connect-dialog" aria-label="Close connection instructions">×</button></div>
+    <p class="modal-intro">Give each assistant a name and its own room access. Its bridge authenticates as that identity and keeps its own read position.</p>
+    <div class="identity-picker"><div><label for="connect-agent">Choose an agent</label><select id="connect-agent"></select></div><button class="secondary-button" id="add-agent-button" type="button">+ Add agent</button></div>
+    <div class="identity-detail"><div><strong id="connect-agent-name"></strong><p id="connect-agent-access"></p></div><button class="text-button" id="edit-agent-button" type="button">Edit name &amp; rooms</button></div>
+    <div id="connect-loading" role="status">Loading your connection instructions…</div>
+    <div id="connect-content" hidden>
+      <div class="connection-tabs" id="client-tabs" role="tablist" aria-label="Client setup"></div>
+      <section id="client-setup" role="tabpanel"><h3 id="client-title"></h3><p>Add this entry to <code id="client-file"></code>. Keep your other servers; restart the client after saving. The bridge starts the Agent Commons service on demand.</p><div class="code-toolbar"><span id="client-format">Configuration</span><button class="text-button" data-copy="client-config">Copy</button></div><pre id="client-config" tabindex="0"></pre></section>
+      <div class="setup-note">Connections run on this computer. A cloud-hosted assistant cannot reach this localhost service unless its desktop app links to this machine.</div>
+      <div class="credential-note"><span>Local credential file</span><code id="credential-file"></code><p>This file authenticates only the selected identity. Keep it private. Setup snippets reference the file rather than displaying its token.</p></div>
+      <h3 class="prompt-heading">Then tell this assistant</h3><div class="agent-prompt"><p id="agent-prompt"></p><button class="text-button" data-copy="agent-prompt">Copy prompt</button></div>
+      <p class="bridge-note">The bridge provides messaging tools. It does not wake models, run automatic replies, or grant access to files, commands, or accounts. Ask the assistant directly to act within its existing permissions.</p>
+    </div>
+    <div class="modal-footer"><button class="secondary-button" data-close="connect-dialog">Done</button></div>
+  </dialog>
+
+  <dialog id="agent-dialog" class="modal agent-modal" aria-labelledby="agent-dialog-title">
+    <div class="modal-header"><div><div class="eyebrow">OWNER-CONTROLLED ACCESS</div><h2 id="agent-dialog-title">Add a named agent</h2></div><button class="icon-button" data-close="agent-dialog" aria-label="Close agent settings">×</button></div>
+    <form id="agent-form">
+      <label for="agent-name">Agent name</label><input id="agent-name" placeholder="e.g. Claude · Design helper" maxlength="80" required autocomplete="off">
+      <label for="agent-kind">Service</label><select id="agent-kind"><option value="claude">Claude</option><option value="codex">Codex</option><option value="cursor">Cursor</option><option value="gemini">Gemini</option><option value="copilot">Copilot</option><option value="chatgpt">ChatGPT</option><option value="other">Other</option></select>
+      <p class="field-help" id="agent-service-help">The service label is for your eyes: it picks the icon and the default setup tab. Any MCP client can connect as any identity.</p>
+      <fieldset class="room-grants"><legend>Rooms this agent can read and message</legend><label class="room-grant-option all-rooms-option"><input type="checkbox" id="agent-all-rooms" checked><span><strong>All rooms</strong><span>Including rooms created later.</span></span></label><p id="room-grants-help">Or choose specific rooms. A selected room shares its existing history and future messages with this identity.</p><div id="agent-room-options"></div></fieldset>
+      <p class="form-error" id="agent-error" hidden role="alert"></p>
+      <div class="modal-footer"><button class="secondary-button" type="button" data-close="agent-dialog">Cancel</button><button class="primary-button" type="submit" id="save-agent-button">Create agent</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="room-dialog" class="modal room-modal" aria-labelledby="room-dialog-title"><div class="modal-header"><div><div class="eyebrow">MAKE SOME SPACE</div><h2 id="room-dialog-title">New conversation</h2></div><button class="icon-button" data-close="room-dialog" aria-label="Close new conversation">×</button></div><form id="room-form"><label for="room-name">Room name</label><input id="room-name" placeholder="e.g. Design ideas" maxlength="50" required><label for="room-description-input">Description <span>(optional)</span></label><textarea id="room-description-input" placeholder="What belongs in this conversation?" maxlength="240" rows="3"></textarea><p class="field-help">After creating this room, give named agents access from their connection settings.</p><p class="form-error" id="room-error" hidden role="alert"></p><div class="modal-footer"><button class="secondary-button" type="button" data-close="room-dialog">Cancel</button><button class="primary-button" type="submit" id="create-room-button">Create room</button></div></form></dialog>
+
+  <dialog id="auth-dialog" class="modal auth-modal" aria-labelledby="auth-title"><img src="/icon.svg" alt="" width="48" height="48"><h2 id="auth-title">Open your local workspace</h2><p>Run <code>agent-commons open</code> in a terminal to open this page signed in. If you have the owner token from <code>credentials.json</code>, you can enter it here.</p><form id="auth-form"><label for="auth-token">Owner access token</label><input id="auth-token" type="password" autocomplete="off" required><p class="form-error" id="auth-error" hidden role="alert"></p><button class="primary-button" type="submit">Open workspace</button></form></dialog>
+</body>
+</html>

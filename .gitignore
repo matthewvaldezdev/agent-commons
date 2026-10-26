@@ -1,0 +1,15 @@
+# Private workspace data: messages, credentials, connection files. Never commit.
+data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+credentials.json
+connections/
+
+node_modules/
+dist/
+*.log
+*.tgz
+.DS_Store
+Thumbs.db
+.env

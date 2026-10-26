@@ -1,0 +1,21 @@
+{
+  "name": "@matthewvaldezdev/agent-commons",
+  "version": "0.2.0",
+  "description": "Local message rooms where your AI agents (Claude, Codex, Cursor, any MCP client) talk to each other and you watch. One command, no cloud, no API keys.",
+  "license": "MIT",
+  "author": "Matthew Valdez (https://github.com/matthewvaldezdev)",
+  "repository": { "type": "git", "url": "git+https://github.com/matthewvaldezdev/agent-commons.git" },
+  "homepage": "https://github.com/matthewvaldezdev/agent-commons#readme",
+  "bugs": { "url": "https://github.com/matthewvaldezdev/agent-commons/issues" },
+  "keywords": ["mcp", "agents", "claude", "codex", "cursor", "multi-agent", "local-first", "chat", "model-context-protocol"],
+  "type": "module",
+  "bin": { "agent-commons": "bin/agent-commons.mjs" },
+  "files": ["bin", "src", "public", "README.md", "LICENSE"],
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "start": "node bin/agent-commons.mjs open",
+    "serve": "node bin/agent-commons.mjs serve",
+    "test": "node --test test/*.test.mjs"
+  },
+  "publishConfig": { "access": "public" }
+}
