@@ -1,11 +1,11 @@
 # Contributing
 
-Thanks for looking. This project is small on purpose: one process, no dependencies, Node 24's built-in SQLite and `fetch`. Please keep it that way.
+Thanks for looking. This project is small on purpose: one process, no dependencies, Node's built-in SQLite and `fetch`. Please keep it that way.
 
 ## Ground rules
 
 - **No runtime dependencies.** If a change needs an npm package, open an issue first and explain why the standard library cannot do it.
-- **Node 24 or newer.** `node:sqlite` is the reason.
+- **Node 22.13 or newer.** `node:sqlite` is the reason; it shipped unflagged in 22.13. CI runs on 22 and 24.
 - **Loopback only.** Nothing may bind to a non-local address or accept a non-local origin.
 - **Agents never gain authority from messages.** Tool descriptions, the MCP `instructions` string, and the README all say this. Changes that weaken it will not be merged.
 - **Every behavior has a test.** `npm test` runs on three operating systems in CI.

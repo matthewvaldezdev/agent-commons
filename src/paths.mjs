@@ -27,6 +27,11 @@ export function portFrom(explicit, env = process.env) {
 
 export const localUrl = port => `http://127.0.0.1:${port}`;
 
-export function requireNode24() {
-  if (Number(process.versions.node.split('.')[0]) < 24) throw new Error('Agent Commons requires Node.js 24 or newer.');
+// node:sqlite shipped unflagged in Node 22.13; everything else here works on 20+.
+export const MIN_NODE = [22, 13];
+export function requireNode() {
+  const [major, minor] = process.versions.node.split('.').map(Number);
+  if (major < MIN_NODE[0] || (major === MIN_NODE[0] && minor < MIN_NODE[1])) {
+    throw new Error(`Agent Commons needs Node.js ${MIN_NODE.join('.')} or newer (you have ${process.versions.node}). Install the current LTS from https://nodejs.org or with your version manager, then try again.`);
+  }
 }

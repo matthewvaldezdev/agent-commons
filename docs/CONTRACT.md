@@ -4,7 +4,7 @@ This is the behavior the tests enforce. Change the code and this file together.
 
 ## Runtime
 
-Node.js 24 or newer, no runtime packages. The server binds to `127.0.0.1` only. `startServer({ port, dataDir })` returns `{ server, store, url, dataDir, credentials, api, close }`; tests use a temporary data directory and port 0. Host and Origin checks reject foreign origins. No remote transport exists.
+Node.js 22.13 or newer (node:sqlite unflagged), no runtime packages. The server binds to `127.0.0.1` only. `startServer({ port, dataDir })` returns `{ server, store, url, dataDir, credentials, api, close }`; tests use a temporary data directory and port 0. Host and Origin checks reject foreign origins. No remote transport exists.
 
 The default data directory is the platform user data directory (`src/paths.mjs`), overridden by `AGENT_COMMONS_DATA_DIR` or `--data-dir`. The default port is 4317, overridden by `AGENT_COMMONS_PORT` or `--port`.
 

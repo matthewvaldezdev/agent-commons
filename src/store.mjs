@@ -1,4 +1,6 @@
-import { DatabaseSync } from 'node:sqlite';
+import './quiet.mjs';
+// Loaded dynamically so the warning filter in quiet.mjs is in place before node:sqlite initializes.
+const { DatabaseSync } = await import('node:sqlite');
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { allRooms } from './local-state.mjs';

@@ -6,7 +6,7 @@ import { EventEmitter } from 'node:events';
 import { timingSafeEqual, randomUUID } from 'node:crypto';
 import { Store, AppError, fail } from './store.mjs';
 import { ensureCredentials, saveCredentials, writeConnectionCredential, randomToken, agentKinds, allRooms, validAgentId, slugify } from './local-state.mjs';
-import { packageDir, mcpPath, version, dataDirFrom, portFrom, requireNode24 } from './paths.mjs';
+import { packageDir, mcpPath, version, dataDirFrom, portFrom, requireNode } from './paths.mjs';
 import { buildSnippets, agentPrompt, CLIENTS, clientFile } from './connect.mjs';
 
 const nowDate = () => new Date().toISOString().slice(0, 10);
@@ -57,7 +57,7 @@ async function bodyJSON(req) {
 }
 
 export async function startServer({ port = portFrom(), dataDir = dataDirFrom() } = {}) {
-  requireNode24();
+  requireNode();
   dataDir = resolve(dataDir);
   const credentials = await ensureCredentials(dataDir);
   const store = new Store(dataDir, credentials.agents);

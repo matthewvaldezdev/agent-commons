@@ -3,7 +3,7 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { dataDirFrom, DEFAULT_PORT, requireNode24, version } from './paths.mjs';
+import { dataDirFrom, DEFAULT_PORT, requireNode, version } from './paths.mjs';
 import { ensureServer } from './launcher.mjs';
 
 export const PROTOCOL_VERSIONS = ['2024-11-05', '2025-03-26', '2025-06-18', '2025-11-25'];
@@ -283,7 +283,7 @@ export async function startBridge(options, { input = process.stdin, output = pro
 }
 
 export async function runBridge(args = process.argv.slice(2)) {
-  requireNode24();
+  requireNode();
   const options = parseOptions(args);
   if (options.help) {
     process.stderr.write('Agent Commons MCP bridge: agent-commons mcp --agent ID [--credential-file PATH | --data-dir PATH] [--url http://127.0.0.1:4317] [--no-autostart]\n');

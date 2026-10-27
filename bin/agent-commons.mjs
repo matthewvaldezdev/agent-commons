@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { dataDirFrom, portFrom, localUrl, version, requireNode24 } from '../src/paths.mjs';
+import { dataDirFrom, portFrom, localUrl, version, requireNode } from '../src/paths.mjs';
 import { CLIENTS } from '../src/connect.mjs';
 import { agentKinds } from '../src/local-state.mjs';
 
@@ -173,7 +173,7 @@ async function cmdList(common, what) {
 }
 
 async function main() {
-  requireNode24();
+  requireNode();
   const argv = process.argv.slice(2);
   const command = argv[0];
   if (!command || command === '--help' || command === '-h' || command === 'help') return out(HELP);
