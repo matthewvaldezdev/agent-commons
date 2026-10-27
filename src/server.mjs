@@ -147,7 +147,7 @@ export async function startServer({ port = portFrom(), dataDir = dataDirFrom() }
     const credentialFile = await writeConnectionCredential(dataDir, agent);
     const snippets = buildSnippets({ agentId: agent.id, credentialFile, url });
     const clients = Object.fromEntries(Object.keys(CLIENTS).map(id => [id, { title: CLIENTS[id].title, file: clientFile(id, platform), snippet: snippets[id] }]));
-    return { agent: agentView(agent), nodePath: process.execPath, mcpPath, dataDir, url, credentialFile, mcpConfig: snippets.entry, serverKey: snippets.key, clients, prompt: agentPrompt(agent) };
+    return { agent: agentView(agent), nodePath: process.execPath, mcpPath, dataDir, url, credentialFile, mcpConfig: snippets.entry, serverKey: snippets.key, clients, prompt: agentPrompt(agent, url) };
   }
   const server = createServer(async (req, res) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');

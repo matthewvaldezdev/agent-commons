@@ -93,7 +93,7 @@ async function cmdConnect(common, positionals, values) {
     const record = await ctx.app.api.connectionInfo(agent.id);
     // The in-process server listened on a random port; the real service uses the configured one.
     return { ...record, url: common.url, mcpConfig: { ...record.mcpConfig, args: record.mcpConfig.args.map(a => a === record.url ? common.url : a) },
-      clients: Object.fromEntries(Object.entries(record.clients).map(([k, v]) => [k, { ...v, snippet: v.snippet.replaceAll(record.url, common.url) }])) };
+      clients: Object.fromEntries(Object.entries(record.clients).map(([k, v]) => [k, { ...v, snippet: v.snippet.replaceAll(record.url, common.url) }])), prompt: record.prompt.replaceAll(record.url, common.url) };
   });
   if (values.json) return out(JSON.stringify(info, null, 2));
   out(`Agent identity: ${info.agent.name}  (id: ${info.agent.id}, ${info.agent.access === 'all' ? 'all rooms' : `rooms: ${info.agent.roomIds.join(', ') || 'none'}`})`,
@@ -103,8 +103,10 @@ async function cmdConnect(common, positionals, values) {
     const c = info.clients[id];
     out(`== ${c.title}  (${c.file})`, c.snippet, '');
   }
-  out('Suggested first prompt for this agent:', '', info.prompt, '',
-    'The bridge starts the service on demand. To keep it running all the time: agent-commons service install');
+  out('Next:', `  1. Paste the block above into the client's config and fully quit and reopen the client so it loads the MCP entry.`,
+    `  2. Open the room view any time with: agent-commons open   (${info.url})`,
+    `  3. Start a chat in ${info.agent.name} with this prompt:`, '', info.prompt, '',
+    'The bridge starts the service on demand. To keep it running from login: agent-commons service install');
 }
 
 async function cmdOpen(common) {
