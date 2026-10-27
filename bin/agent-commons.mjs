@@ -42,13 +42,25 @@ function guessKind(name) {
   return 'other';
 }
 
+const foreignPort = common => new Error(`Something is already listening at ${common.url} that does not belong to the workspace in ${common.dataDir}. If it is another Agent Commons install, stop it or point this one elsewhere with --port (or AGENT_COMMONS_PORT) and --data-dir.`);
+
+// The owner credentials for this data directory, verified against the service that is actually listening.
+async function ownerCredentials(common) {
+  let credentials;
+  try { credentials = JSON.parse(await readFile(resolve(common.dataDir, 'credentials.json'), 'utf8')); }
+  catch (error) { if (error.code === 'ENOENT') throw foreignPort(common); throw error; }
+  const response = await fetch(`${common.url}/api/state`, { headers: { authorization: `Bearer ${credentials.ownerToken}` }, signal: AbortSignal.timeout(2000) });
+  if (response.status === 401 || response.status === 403) throw foreignPort(common);
+  return credentials;
+}
+
 async function withServer(common, fn) {
   // Prefer the running service (so credentials stay in one process); fall back to an in-process server.
   const { startServer } = await import('../src/server.mjs');
   const { health } = await import('../src/launcher.mjs');
   const running = await health(common.url);
   if (running) {
-    const credentials = JSON.parse(await readFile(resolve(common.dataDir, 'credentials.json'), 'utf8'));
+    const credentials = await ownerCredentials(common);
     const api = async (path, { method = 'GET', body } = {}) => {
       const response = await fetch(common.url + path, { method, headers: { authorization: `Bearer ${credentials.ownerToken}`, ...(body ? { 'content-type': 'application/json' } : {}) }, body: body && JSON.stringify(body) });
       const value = await response.json();
@@ -98,7 +110,7 @@ async function cmdConnect(common, positionals, values) {
 async function cmdOpen(common) {
   const { ensureServer } = await import('../src/launcher.mjs');
   await ensureServer({ ...common, log: line => process.stderr.write(line + '\n') });
-  const credentials = JSON.parse(await readFile(resolve(common.dataDir, 'credentials.json'), 'utf8'));
+  const credentials = await ownerCredentials(common);
   const address = `${common.url}/#token=${encodeURIComponent(credentials.ownerToken)}`;
   const command = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'rundll32.exe' : 'xdg-open';
   const args = process.platform === 'win32' ? ['url.dll,FileProtocolHandler', address] : [address];
@@ -124,10 +136,10 @@ async function cmdStatus(common) {
   try { const s = await serviceStatus(common); out(`Background service: ${s.installed ? (s.active ? 'installed and active' : 'installed, not active') : 'not installed'}  (${s.file})`); }
   catch (error) { out(`Background service: ${error.message}`); }
   if (!running) return;
-  const credentials = JSON.parse(await readFile(resolve(common.dataDir, 'credentials.json'), 'utf8'));
-  const response = await fetch(`${common.url}/api/state`, { headers: { authorization: `Bearer ${credentials.ownerToken}` } });
-  if (!response.ok) return out('The running service belongs to a different data directory.');
-  const state = await response.json();
+  let credentials;
+  try { credentials = await ownerCredentials(common); }
+  catch (error) { return out('', error.message); }
+  const state = await (await fetch(`${common.url}/api/state`, { headers: { authorization: `Bearer ${credentials.ownerToken}` } })).json();
   out('', 'Agents:', ...(state.agents.length ? state.agents.map(a => `  ${a.connected ? '●' : '○'} ${a.name}  (${a.id}, ${a.kind}, ${a.access === 'all' ? 'all rooms' : `${a.roomIds.length} rooms`})`) : ['  none yet: agent-commons connect <name>']),
     '', 'Rooms:', ...state.rooms.map(r => `  ${r.name}  (${r.id}, ${r.messageCount} messages${r.unread ? `, ${r.unread} unread` : ''})`));
 }

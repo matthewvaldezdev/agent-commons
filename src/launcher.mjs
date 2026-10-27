@@ -16,9 +16,10 @@ export async function health(url, timeout = 1000) {
 
 // Confirms the listener on this port belongs to this data directory and not to a different workspace.
 export async function sameWorkspace(url, dataDir) {
+  // A running service always has a credentials file in its own data directory, so a missing file means the listener is someone else's.
   let credentials;
   try { credentials = JSON.parse(await readFile(resolve(dataDir, 'credentials.json'), 'utf8')); }
-  catch { return true; } // Nothing to compare against yet; the server will create the file.
+  catch { return false; }
   try {
     const response = await fetch(`${url}/api/state`, { headers: { authorization: `Bearer ${credentials.ownerToken}` }, signal: AbortSignal.timeout(2000) });
     return response.ok;

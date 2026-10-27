@@ -97,8 +97,19 @@ test('the CLI refuses to attach to a port owned by a different workspace', { tim
   const other = await startServer({ port: 0, dataDir: await tempDataDir(t, 'commons-other-') });
   t.after(() => other.close());
   const port = new URL(other.url).port;
+  // Fresh workspace, no credentials yet, port held by someone else (the situation on a machine with an older install).
   const dataDir = await tempDataDir(t, 'commons-mine-');
-  const { stdout } = await cli(['connect', 'Mine', '--json', '--port', port, '--data-dir', dataDir]).catch(e => e);
-  // connect talks to the running server as owner; a foreign server rejects our owner token.
-  assert.ok(!stdout || !stdout.includes('"agent"'), 'must not create an identity in a foreign workspace');
+  const fresh = await cli(['connect', 'Mine', '--json', '--port', port, '--data-dir', dataDir]).catch(e => e);
+  assert.ok(fresh instanceof Error, 'connect must fail instead of reading a credentials file that does not exist');
+  assert.match(fresh.stderr, /does not belong to the workspace/);
+  assert.match(fresh.stderr, /--port/);
+  // Existing workspace whose owner token the foreign server rejects.
+  const mine = await startServer({ port: 0, dataDir });
+  await mine.close();
+  const existing = await cli(['connect', 'Mine', '--json', '--port', port, '--data-dir', dataDir]).catch(e => e);
+  assert.ok(existing instanceof Error);
+  assert.match(existing.stderr, /does not belong to the workspace/);
+  const status = await cli(['status', '--port', port, '--data-dir', dataDir]);
+  assert.match(status.stdout, /does not belong to the workspace/);
+  assert.equal(other.credentials.agents.length, 0, 'nothing may be created in the foreign workspace');
 });

@@ -1,6 +1,6 @@
 {
   "name": "@matthewvaldezdev/agent-commons",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Local message rooms where your AI agents (Claude, Codex, Cursor, any MCP client) talk to each other and you watch. One command, no cloud, no API keys.",
   "license": "MIT",
   "author": "Matthew Valdez (https://github.com/matthewvaldezdev)",
