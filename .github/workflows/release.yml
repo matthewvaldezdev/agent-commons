@@ -1,0 +1,31 @@
+name: Release
+
+# Push a tag like v0.3.0 and this attaches the Claude Desktop extension to a GitHub release,
+# so the README's "Download agent-commons.mcpb" link always points at the newest build.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  extension:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm test
+        env:
+          AGENT_COMMONS_AUTOSTART: '0'
+      - name: Check the tag matches package.json
+        run: test "v$(node -p "require('./package.json').version")" = "${GITHUB_REF_NAME}"
+      - run: npm run pack:extension
+      - name: Publish the release with the extension attached
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" dist/agent-commons.mcpb --clobber

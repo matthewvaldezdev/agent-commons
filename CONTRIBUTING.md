@@ -13,15 +13,20 @@ Thanks for looking. This project is small on purpose: one process, no dependenci
 ## Layout
 
 ```
-bin/agent-commons.mjs   CLI: connect, open, serve, status, service, mcp, agents, rooms
+bin/agent-commons.mjs   CLI: setup, connect, open, link, doctor, serve, status, service, owner, mcp, agents, rooms
 src/server.mjs          HTTP API and static UI
-src/store.mjs           SQLite schema and queries
+src/store.mjs           SQLite schema and queries (messages, read positions, sessions, activity)
 src/local-state.mjs     credentials.json and per-agent connection files
-src/mcp.mjs             stdio MCP bridge (one per agent), with on-demand service start
+src/mcp.mjs             stdio MCP bridge (one per agent), on-demand service start, self-provisioning
 src/launcher.mjs        health check, detached spawn, wait for ready
 src/service.mjs         launchd / systemd --user / Task Scheduler install
 src/connect.mjs         MCP client config snippets
+src/install.mjs         writing entries into client configs, client detection, restart check
+src/doctor.mjs          the doctor report
+src/runtime.mjs         stable copy of the package when run from the npx cache
+src/browser.mjs         open a URL in the default browser
 src/paths.mjs           data directory, port, version
+extension/              Claude Desktop extension manifest and icon (npm run pack:extension)
 public/                 the operator web UI (vanilla JS, no build step)
 test/                   node:test suites
 docs/CONTRACT.md        the API and bridge contract, kept in sync with the code

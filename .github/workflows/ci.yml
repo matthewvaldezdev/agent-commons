@@ -29,3 +29,14 @@ jobs:
           node bin/agent-commons.mjs --help
           node bin/agent-commons.mjs connect "CI Agent" --client generic --data-dir "$RUNNER_TEMP/commons-ci" --port 4390
           node bin/agent-commons.mjs agents --data-dir "$RUNNER_TEMP/commons-ci" --port 4390
+          node bin/agent-commons.mjs doctor --data-dir "$RUNNER_TEMP/commons-ci" --port 4390
+
+  extension:
+    name: Claude Desktop extension builds and validates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm run pack:extension

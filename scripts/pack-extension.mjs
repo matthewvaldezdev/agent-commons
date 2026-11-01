@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Builds dist/agent-commons-<version>.mcpb: a Claude Desktop extension people add from Settings, with nothing to paste.
+// Builds dist/agent-commons.mcpb: a Claude Desktop extension people add from Settings, with nothing to paste.
 // Usage: npm run pack:extension   (needs network once, to fetch the official @anthropic-ai/mcpb packer through npx)
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
@@ -9,7 +9,8 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const pkg = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
 const stage = resolve(root, 'dist', 'extension');
-const output = resolve(root, 'dist', `agent-commons-${pkg.version}.mcpb`);
+// A stable file name, so the README can link to releases/latest/download/agent-commons.mcpb.
+const output = resolve(root, 'dist', 'agent-commons.mcpb');
 
 await rm(stage, { recursive: true, force: true });
 await mkdir(stage, { recursive: true });
