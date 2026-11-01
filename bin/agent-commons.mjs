@@ -16,7 +16,9 @@ Usage: agent-commons <command> [options]
                         --client claude-desktop|claude-code|codex|cursor|windsurf|gemini|generic|all
                         --rooms all|<id,id,...>   rooms this identity may use (default: all)
                         --json                    print the full connection record
-  open                  Start the service if needed and open the web UI, signed in
+  open [room]           Start the service if needed and open the web UI, signed in (one-time link, no password)
+  link [room]           Print the link to a room (no credential in it); --open also opens it signed in
+  owner rotate          Replace the owner key and sign out every browser
   serve                 Run the service in the foreground (what the background service runs)
   status                Show whether the service is running and which agents are connected
   service install       Keep the service running in the background (launchd / systemd --user / Task Scheduler)
@@ -109,17 +111,61 @@ async function cmdConnect(common, positionals, values) {
     'The bridge starts the service on demand. To keep it running from login: agent-commons service install');
 }
 
-async function cmdOpen(common) {
-  const { ensureServer } = await import('../src/launcher.mjs');
-  await ensureServer({ ...common, log: line => process.stderr.write(line + '\n') });
-  const credentials = await ownerCredentials(common);
-  const address = `${common.url}/#token=${encodeURIComponent(credentials.ownerToken)}`;
+function openBrowser(address, fallback) {
   const command = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'rundll32.exe' : 'xdg-open';
   const args = process.platform === 'win32' ? ['url.dll,FileProtocolHandler', address] : [address];
   const browser = spawn(command, args, { detached: true, stdio: 'ignore' });
-  browser.on('error', () => out(`Open this address in a browser:\n${address}`));
+  browser.on('error', () => out(fallback));
   browser.unref();
-  out(`Agent Commons is running at ${common.url}`);
+}
+
+// Talks to the running service as the owner. The owner key travels only in this request's header, never in a URL, argument or log.
+async function ownerApi(common) {
+  const { ensureServer } = await import('../src/launcher.mjs');
+  await ensureServer({ ...common, log: line => process.stderr.write(line + '\n') });
+  const credentials = await ownerCredentials(common);
+  return async (path, { method = 'GET', body } = {}) => {
+    const response = await fetch(common.url + path, { method, headers: { authorization: `Bearer ${credentials.ownerToken}`, ...(body ? { 'content-type': 'application/json' } : {}) }, body: body && JSON.stringify(body) });
+    const value = await response.json();
+    if (!response.ok) throw new Error(value.error || `Request failed (${response.status}).`);
+    return value;
+  };
+}
+
+function findRoom(rooms, wanted) {
+  if (!wanted) return rooms.find(r => r.id === 'general') || rooms[0];
+  const room = rooms.find(r => r.id === wanted) || rooms.find(r => r.name.toLowerCase() === wanted.toLowerCase());
+  if (!room) throw new Error(`No room called "${wanted}". Rooms: ${rooms.map(r => r.name).join(', ')}`);
+  return room;
+}
+
+// A single-use sign-in code (valid two minutes) plus an optional room. The link signs in one browser once; it is not a credential afterwards.
+async function signInAddress(api, roomId) {
+  const { code } = await api('/api/signin-codes', { method: 'POST', body: {} });
+  return `${new URL((await api('/api/state')).url).origin}/#signin=${encodeURIComponent(code)}${roomId ? `&room=${encodeURIComponent(roomId)}` : ''}`;
+}
+
+async function cmdOpen(common, positionals) {
+  const api = await ownerApi(common);
+  const room = positionals[0] ? findRoom((await api('/api/state')).rooms, positionals[0]) : null;
+  const address = await signInAddress(api, room?.id);
+  openBrowser(address, '');
+  out(`Agent Commons is running at ${common.url}${room ? `  (room: ${room.name})` : ''}`,
+    `If no browser window opened, open this one-time sign-in link within two minutes:`, address);
+}
+
+async function cmdLink(common, positionals, values) {
+  const api = await ownerApi(common);
+  const room = findRoom((await api('/api/state')).rooms, positionals[0]);
+  out(room.url);
+  if (values.open) openBrowser(await signInAddress(api, room.id), '');
+}
+
+async function cmdOwner(common, positionals) {
+  if (positionals[0] !== 'rotate') throw new Error('Use: agent-commons owner rotate');
+  const api = await ownerApi(common);
+  await api('/api/owner/rotate', { method: 'POST', body: {} });
+  out('The owner key was replaced and every browser was signed out. Run "agent-commons open" to sign in again.');
 }
 
 async function cmdServe(common) {
@@ -170,7 +216,7 @@ async function cmdList(common, what) {
   await withServer(common, async ctx => {
     const state = ctx.remote ? await ctx.api('/api/state') : ctx.app.store.state({ id: 'you', name: 'You', kind: 'human', owner: true }, ctx.app.credentials.agents);
     if (what === 'agents') out(...(state.agents.length ? state.agents.map(a => `${a.id}\t${a.name}\t${a.kind}\t${a.access === 'all' ? 'all rooms' : a.roomIds.join(',')}`) : ['No agents yet. Create one: agent-commons connect <name>']));
-    else out(...state.rooms.map(r => `${r.id}\t${r.name}\t${r.messageCount} messages`));
+    else out(...state.rooms.map(r => `${r.id}\t${r.name}\t${r.messageCount} messages\t${r.url || `${common.url}/#room=${encodeURIComponent(r.id)}`}`));
   });
 }
 
@@ -182,13 +228,15 @@ async function main() {
   if (command === '--version' || command === '-v') return out(version);
   if (command === 'mcp') { const { runBridge } = await import('../src/mcp.mjs'); return runBridge(argv.slice(1)); }
   const { values, positionals } = parseArgs({ args: argv.slice(1), allowPositionals: true, options: {
-    port: { type: 'string' }, 'data-dir': { type: 'string' }, kind: { type: 'string' }, client: { type: 'string' }, rooms: { type: 'string' }, json: { type: 'boolean' },
+    port: { type: 'string' }, 'data-dir': { type: 'string' }, kind: { type: 'string' }, client: { type: 'string' }, rooms: { type: 'string' }, json: { type: 'boolean' }, open: { type: 'boolean' },
   } });
   const port = portFrom(values.port);
   const common = { port, dataDir: dataDirFrom(values['data-dir']), url: localUrl(port) };
   switch (command) {
     case 'connect': return cmdConnect(common, positionals, values);
-    case 'open': return cmdOpen(common);
+    case 'open': return cmdOpen(common, positionals);
+    case 'link': return cmdLink(common, positionals, values);
+    case 'owner': return cmdOwner(common, positionals);
     case 'serve': return cmdServe(common);
     case 'status': return cmdStatus(common);
     case 'service': return cmdService(common, positionals);

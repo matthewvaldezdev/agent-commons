@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { EventEmitter } from 'node:events';
 import { timingSafeEqual, randomUUID } from 'node:crypto';
-import { Store, AppError, fail } from './store.mjs';
+import { Store, AppError, fail, hashToken } from './store.mjs';
 import { ensureCredentials, saveCredentials, writeConnectionCredential, randomToken, agentKinds, allRooms, validAgentId, slugify } from './local-state.mjs';
 import { packageDir, mcpPath, version, dataDirFrom, portFrom, requireNode } from './paths.mjs';
 import { buildSnippets, agentPrompt, CLIENTS, clientFile } from './connect.mjs';
@@ -44,6 +44,18 @@ function queryInt(params, key, fallback, min = 0, max = Number.MAX_SAFE_INTEGER)
 function allowedKeys(body, keys) {
   if (Object.keys(body).some(key => !keys.includes(key))) fail(400, 'Unsupported fields. The authenticated sender is assigned automatically.');
 }
+const DAY = 24 * 3600 * 1000;
+export const SESSION_TTL = 90 * DAY;
+const SESSION_REFRESH = 3600 * 1000;
+const SIGNIN_CODE_TTL = 2 * 60 * 1000;
+const sessionCookie = (value, maxAgeMs) => `commons_session=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.floor(maxAgeMs / 1000)}`;
+// A readable label for the signed-in browsers list, e.g. "Firefox on Linux". Never used for authorization.
+export function browserLabel(userAgent = '') {
+  const browser = /Edg\//.test(userAgent) ? 'Edge' : /Firefox\//.test(userAgent) ? 'Firefox' : /Chrome\//.test(userAgent) ? 'Chrome' : /Safari\//.test(userAgent) ? 'Safari' : 'Browser';
+  const os = /Windows/.test(userAgent) ? 'Windows' : /Android/.test(userAgent) ? 'Android' : /iPhone|iPad/.test(userAgent) ? 'iOS' : /Mac OS X|Macintosh/.test(userAgent) ? 'macOS' : /Linux/.test(userAgent) ? 'Linux' : 'this computer';
+  return `${browser} on ${os}`;
+}
+
 async function bodyJSON(req) {
   if (!/^application\/json(?:;|$)/i.test(req.headers['content-type'] || '')) fail(415, 'Use application/json.');
   const chunks = []; let size = 0;
@@ -63,7 +75,8 @@ export async function startServer({ port = portFrom(), dataDir = dataDirFrom() }
   const store = new Store(dataDir, credentials.agents);
   if (process.platform !== 'win32') await chmod(resolve(dataDir, 'commons.sqlite'), 0o600);
   const human = { id: 'you', name: 'You', kind: 'human', owner: true };
-  const sessions = new Map();
+  const signinCodes = new Map(); // sha256(code) -> expiry; single use, memory only
+  const activity = new Map(); // agentId -> last recorded activity (ms), to avoid a database write per request
   const changes = new EventEmitter(); changes.setMaxListeners(0);
   const streams = new Set();
   const pending = new Set();
@@ -80,19 +93,38 @@ export async function startServer({ port = portFrom(), dataDir = dataDirFrom() }
     const payload = `event: change\ndata: ${JSON.stringify(event)}\n\n`;
     for (const res of streams) if (!res.write(payload)) res.end();
   };
-  function identify(req) {
+  const roomLink = roomId => `${url}/#room=${encodeURIComponent(roomId)}`;
+  const messageLink = (roomId, id) => `${roomLink(roomId)}&message=${id}`;
+  // Links never carry a credential: agents see and repeat them.
+  const withLinks = result => ({ ...result, messages: result.messages.map(m => ({ ...m, messageUrl: messageLink(m.roomId, m.id) })) });
+  const recordActivity = (agentId, via) => {
+    const at = Date.now();
+    const last = activity.get(agentId);
+    if (last && at - last.at < 1000 && last.via === via) return;
+    activity.set(agentId, { at, via });
+    store.touch(agentId, via);
+    if (!last || at - last.at > 30000) broadcast({ type: 'presence' });
+  };
+  const cookieValue = req => req.headers.cookie?.split(';').map(c => c.trim()).find(c => c.startsWith('commons_session='))?.slice('commons_session='.length);
+  function identify(req, res) {
     const bearer = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
     if (bearer) {
       if (equal(bearer, credentials.ownerToken)) return human;
       const agent = credentials.agents.find(a => equal(a.token, bearer));
-      if (agent) return { id: agent.id, name: agent.name, kind: agent.kind, roomIds: agent.roomIds, allRooms: allRooms(agent), owner: false };
+      if (agent) {
+        // Heartbeats are bridge presence, not activity.
+        if (!req.url.startsWith('/api/heartbeat')) recordActivity(agent.id, req.headers['x-agent-commons-client'] === 'bridge' ? 'bridge' : 'api');
+        return { id: agent.id, name: agent.name, kind: agent.kind, roomIds: agent.roomIds, allRooms: allRooms(agent), owner: false };
+      }
       fail(401, 'Unknown local credential.');
     }
-    const cookie = req.headers.cookie?.split(';').map(c => c.trim()).find(c => c.startsWith('commons_session='))?.slice('commons_session='.length);
-    const session = cookie && sessions.get(cookie);
-    if (session && session > Date.now()) return human;
-    if (cookie) sessions.delete(cookie);
-    fail(401, 'Open Agent Commons with "agent-commons open" to sign in locally.');
+    const cookie = cookieValue(req);
+    const session = cookie && store.useSession(cookie, SESSION_TTL, SESSION_REFRESH);
+    if (session) {
+      if (session.refreshed && res && !res.headersSent) res.setHeader('Set-Cookie', sessionCookie(cookie, SESSION_TTL));
+      return { ...human, sessionId: session.id };
+    }
+    fail(401, 'Sign in to Agent Commons by running "agent-commons open" on this computer.');
   }
   const ownerOnly = me => { if (!me.owner) fail(403, 'This action is for the person using the app.'); };
   const roomAccess = (me, roomId) => {
@@ -159,16 +191,55 @@ export async function startServer({ port = portFrom(), dataDir = dataDirFrom() }
       const path = route.pathname;
       if (req.method === 'GET' && path === '/api/health') return json(res, 200, { ok: true, name: 'Agent Commons', version });
       if (req.method === 'POST' && path === '/api/session') {
-        const body = await bodyJSON(req); allowedKeys(body, ['token']);
-        if (!equal(body.token, credentials.ownerToken)) fail(401, 'Invalid sign-in link. Run "agent-commons open" to get a fresh one.');
+        // A one-time sign-in code (what "agent-commons open" uses), or the owner token typed by hand as a fallback.
+        const body = await bodyJSON(req); allowedKeys(body, ['code', 'token']);
+        if (typeof body.code === 'string') {
+          const key = hashToken(body.code);
+          const expiry = signinCodes.get(key);
+          signinCodes.delete(key);
+          if (!expiry || expiry < Date.now()) fail(401, 'That sign-in link was already used or has expired. Run "agent-commons open" again for a fresh one.');
+        } else if (!equal(body.token, credentials.ownerToken)) fail(401, 'That key does not open this workspace.');
         const sessionToken = randomToken();
-        for (const [key, expiry] of sessions) if (expiry < Date.now()) sessions.delete(key);
-        sessions.set(sessionToken, Date.now() + 7 * 24 * 3600 * 1000);
-        return json(res, 200, { ok: true }, { 'Set-Cookie': `commons_session=${sessionToken}; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800` });
+        store.createSession(sessionToken, browserLabel(req.headers['user-agent']), SESSION_TTL);
+        return json(res, 200, { ok: true }, { 'Set-Cookie': sessionCookie(sessionToken, SESSION_TTL) });
       }
       if (path.startsWith('/api/')) {
-        let me = identify(req);
-        if (req.method === 'GET' && path === '/api/state') return json(res, 200, store.state(me, credentials.agents));
+        let me = identify(req, res);
+        if (req.method === 'POST' && path === '/api/signin-codes') {
+          ownerOnly(me);
+          const code = randomToken();
+          const at = Date.now();
+          for (const [key, expiry] of signinCodes) if (expiry < at) signinCodes.delete(key);
+          signinCodes.set(hashToken(code), at + SIGNIN_CODE_TTL);
+          return json(res, 201, { code, expiresAt: new Date(at + SIGNIN_CODE_TTL).toISOString() });
+        }
+        if (req.method === 'GET' && path === '/api/sessions') {
+          ownerOnly(me);
+          return json(res, 200, { sessions: store.sessions().map(s => ({ ...s, current: s.id === me.sessionId })) });
+        }
+        if (req.method === 'DELETE' && (path === '/api/sessions' || path.startsWith('/api/sessions/'))) {
+          ownerOnly(me);
+          const id = path.slice('/api/sessions/'.length);
+          if (path === '/api/sessions') store.deleteAllSessions();
+          else if (!store.deleteSession(id)) fail(404, 'That browser is already signed out.');
+          const signedOutHere = path === '/api/sessions' || id === me.sessionId;
+          return json(res, 200, { ok: true, signedOutHere }, signedOutHere && me.sessionId ? { 'Set-Cookie': sessionCookie('', 0) } : {});
+        }
+        if (req.method === 'POST' && path === '/api/owner/rotate') {
+          ownerOnly(me);
+          // Replaces the owner key and signs out every browser. The new key is written to credentials.json, never returned.
+          await updateCredentials(async () => {
+            const next = { ...credentials, ownerToken: randomToken() };
+            await saveCredentials(dataDir, next);
+            Object.assign(credentials, next);
+          });
+          store.deleteAllSessions();
+          return json(res, 200, { ok: true }, me.sessionId ? { 'Set-Cookie': sessionCookie('', 0) } : {});
+        }
+        if (req.method === 'GET' && path === '/api/state') {
+          const state = store.state(me, credentials.agents);
+          return json(res, 200, { ...state, url, rooms: state.rooms.map(r => ({ ...r, url: roomLink(r.id) })) });
+        }
         if (req.method === 'GET' && path === '/api/messages') {
           const roomId = text(route.searchParams.get('room'), 'Room', 100);
           const after = queryInt(route.searchParams, 'after', undefined);
@@ -183,27 +254,27 @@ export async function startServer({ port = portFrom(), dataDir = dataDirFrom() }
             await waitForMessage(roomId, res, wait, me.id);
             if (res.destroyed) return;
             if (closing) return json(res, 503, { error: 'The local app is stopping. Reopen it to continue.' });
-            me = identify(req);
+            me = identify(req, res);
             roomAccess(me, roomId);
             result = store.messages(roomId, { after, limit });
           }
-          return json(res, 200, result);
+          return json(res, 200, { ...withLinks(result), roomUrl: roomLink(roomId) });
         }
         if (req.method === 'POST' && path === '/api/messages') {
           const body = await bodyJSON(req); allowedKeys(body, ['roomId', 'body', 'replyTo', 'clientMessageId']);
           const message = { roomId: text(body.roomId, 'Room', 100), body: text(body.body, 'Message', 12000, { trim: false }) };
           if (body.replyTo != null) message.replyTo = integer(body.replyTo, 'Reply ID', 1);
           if (body.clientMessageId != null) message.clientMessageId = text(body.clientMessageId, 'Retry ID', 128);
-          me = identify(req);
+          me = identify(req, res);
           roomAccess(me, message.roomId);
           const result = store.send(me, message);
           if (!result.duplicate) broadcast({ type: 'message', roomId: message.roomId, id: result.message.id });
-          return json(res, result.duplicate ? 200 : 201, result);
+          return json(res, result.duplicate ? 200 : 201, { ...result, message: { ...result.message, messageUrl: messageLink(message.roomId, result.message.id) }, roomUrl: roomLink(message.roomId) });
         }
         if (req.method === 'POST' && path === '/api/read') {
           const body = await bodyJSON(req); allowedKeys(body, ['roomId', 'cursor']);
           const roomId = text(body.roomId, 'Room', 100);
-          me = identify(req);
+          me = identify(req, res);
           roomAccess(me, roomId);
           const result = store.markRead(me.id, roomId, integer(body.cursor, 'Read position'));
           broadcast({ type: 'read', roomId });
@@ -219,7 +290,7 @@ export async function startServer({ port = portFrom(), dataDir = dataDirFrom() }
         if (req.method === 'POST' && path === '/api/rooms') {
           ownerOnly(me); const body = await bodyJSON(req); allowedKeys(body, ['name', 'description']);
           const room = store.createRoom(text(body.name, 'Room name', 50), text(body.description, 'Description', 240, { required: false }));
-          broadcast({ type: 'room', roomId: room.id }); return json(res, 201, { room });
+          broadcast({ type: 'room', roomId: room.id }); return json(res, 201, { room: { ...room, url: roomLink(room.id) } });
         }
         if (req.method === 'POST' && path === '/api/agents') {
           ownerOnly(me);

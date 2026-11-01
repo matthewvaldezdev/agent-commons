@@ -118,7 +118,9 @@ function renderState() {
     const content = element('div', 'agent-card-content');
     const status = element('p');
     status.append(element('span', 'status-dot'), document.createTextNode(agent.connected ? 'Bridge connected' : 'Bridge offline'));
-    content.append(element('strong', '', agent.name), element('span', 'agent-service', serviceName(agent.kind)), status, element('span', 'agent-scope', accessLabel(agent)));
+    content.append(element('strong', '', agent.name), element('span', 'agent-service', serviceName(agent.kind)), status);
+    if (agent.lastActiveAt) content.append(element('span', 'agent-scope', `Active ${timeAgo(agent.lastActiveAt)} via ${agent.lastActiveVia === 'bridge' ? 'bridge' : 'API'}`));
+    content.append(element('span', 'agent-scope', accessLabel(agent)));
     const mark = element('span', 'agent-connection-mark', '↗');
     mark.setAttribute('aria-hidden', 'true');
     card.append(logo, content, mark);
@@ -142,6 +144,14 @@ function accessLabel(agent) {
   if (allRooms(agent)) return 'All rooms';
   const count = agent.roomIds?.length || 0;
   return count ? `${count} ${count === 1 ? 'room' : 'rooms'} allowed` : 'No rooms allowed';
+}
+function timeAgo(iso) {
+  const seconds = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
+  if (seconds < 60) return 'just now';
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  return hours < 48 ? `${hours} h ago` : new Date(iso).toLocaleDateString();
 }
 function renderConversationContext() {
   if (ui.search) { $('conversation-context-text').textContent = `Search results for “${ui.search}” · latest 100 matches`; return; }
@@ -255,10 +265,22 @@ async function loadRoom({ reset = false, forceBottom = false } = {}) {
   }
 }
 
+// The address bar always holds a shareable link to the open room. It never holds a credential.
+function roomHash(id, messageId) { return `#room=${encodeURIComponent(id)}${messageId ? `&message=${messageId}` : ''}`; }
+function syncAddress(messageId) {
+  const next = roomHash(ui.room, messageId);
+  if (window.location.hash !== next) history.replaceState(null, '', `${window.location.pathname}${window.location.search}${next}`);
+}
+function roomLink(id = ui.room) {
+  return ui.state?.rooms.find((room) => room.id === id)?.url || `${window.location.origin}/${roomHash(id)}`;
+}
+
 async function selectRoom(id) {
+  syncAddress();
   if (id === ui.room && ui.messages.length) { closeSidebar(); return; }
   ui.drafts.set(ui.room, $('message-input').value);
   ui.room = id;
+  syncAddress();
   ui.roomVersion += 1;
   ui.search = '';
   ui.messages = [];
@@ -284,7 +306,7 @@ async function refresh() {
     do {
       ui.refreshPending = false;
       ui.state = await api('/api/state');
-      if (!ui.state.rooms.some((room) => room.id === ui.room)) ui.room = ui.state.rooms[0]?.id || 'general';
+      if (!ui.state.rooms.some((room) => room.id === ui.room)) { ui.room = ui.state.rooms[0]?.id || 'general'; syncAddress(); }
       renderState();
       await loadRoom();
     } while (ui.refreshPending);
@@ -361,6 +383,30 @@ async function loadOlder() {
     $('message-scroll').scrollTop = oldTop + $('message-scroll').scrollHeight - oldHeight;
   } catch (error) { showError(error, loadOlder); }
   finally { button.disabled = false; button.textContent = 'Show earlier messages'; }
+}
+
+async function focusMessage(id) {
+  for (let page = 0; page < 50 && !ui.messages.some((message) => message.id === id) && ui.hasOlder && (ui.messages[0]?.id || 0) > id; page++) await loadOlder();
+  const row = $(`message-${id}`);
+  if (!row) { toast('That message is not in this room.'); return; }
+  row.scrollIntoView({ block: 'center' });
+  row.classList.remove('highlight');
+  void row.offsetWidth;
+  row.classList.add('highlight');
+  syncAddress(id);
+}
+
+// Opens #room=ID&message=N links. An unknown or unshared room leaves the current room open with a short notice.
+async function followLink(roomId, messageId) {
+  if (!ui.state || !roomId) return;
+  if (!ui.state.rooms.some((room) => room.id === roomId)) { toast('That room is not available in this workspace.'); syncAddress(); return; }
+  if (roomId !== ui.room || !ui.messages.length) await selectRoom(roomId);
+  if (messageId) await focusMessage(messageId);
+}
+function linkFromHash() {
+  const params = new URLSearchParams(window.location.hash.slice(1));
+  const message = Number(params.get('message'));
+  return { room: params.get('room'), message: Number.isSafeInteger(message) && message > 0 ? message : null };
 }
 
 async function exportTranscript() {
@@ -558,34 +604,69 @@ async function saveAgent(event) {
   finally { if (version === ui.agentFormVersion) { button.disabled = false; ui.savingAgent = false; } }
 }
 
-function showAuth() {
+function showAuth(message) {
   ui.eventSource?.close();
   ui.eventSource = null;
   const dialog = $('auth-dialog');
+  $('auth-notice').hidden = !message;
+  $('auth-notice').textContent = message || '';
   if (!dialog.open) dialog.showModal();
 }
 
-async function authenticatedStart() {
+async function authenticatedStart(link = linkFromHash()) {
   clearError();
   ui.state = await api('/api/state');
+  if (link.room && ui.state.rooms.some((room) => room.id === link.room)) ui.room = link.room;
   renderState();
   await loadRoom({ reset: true, forceBottom: true });
+  syncAddress();
   connectEvents();
+  if (link.room && link.room !== ui.room) toast('That room is not available in this workspace.');
+  else if (link.message) await focusMessage(link.message);
 }
 
 async function bootstrap() {
   const params = new URLSearchParams(window.location.hash.slice(1));
-  const token = params.get('token');
-  if (window.location.hash) history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+  const code = params.get('signin');
+  const token = params.get('token'); // links from 0.2 and earlier
+  const link = linkFromHash();
+  // Strip the sign-in part right away; keep the room part so the address stays shareable.
+  if (code || token) { params.delete('signin'); params.delete('token'); history.replaceState(null, '', `${window.location.pathname}${window.location.search}${params.size ? `#${params}` : ''}`); }
   try {
-    if (token) await post('/api/session', { token });
-    await authenticatedStart();
+    if (code) await post('/api/session', { code });
+    else if (token) await post('/api/session', { token });
+    await authenticatedStart(link);
   } catch (error) {
-    if (error.status === 401 || error.status === 403) {
-      showAuth();
-      if (token) { $('auth-error').textContent = 'That access link could not open this workspace. Use the start shortcut again.'; $('auth-error').hidden = false; }
-    } else showError(error, bootstrap);
+    if (error.status === 401 || error.status === 403) showAuth(code || token ? error.message : '');
+    else showError(error, bootstrap);
   }
+}
+
+async function showSessions() {
+  const list = $('session-list');
+  list.replaceChildren(element('p', 'field-help', 'Loading…'));
+  if (!$('sessions-dialog').open) $('sessions-dialog').showModal();
+  try {
+    const { sessions } = await api('/api/sessions');
+    list.replaceChildren();
+    if (!sessions.length) list.append(element('p', 'field-help', 'No browsers are signed in.'));
+    for (const session of sessions) {
+      const row = element('div', 'session-row');
+      const text = element('div');
+      text.append(element('strong', '', `${session.label}${session.current ? ' (this browser)' : ''}`),
+        element('span', '', `Signed in ${new Date(session.createdAt).toLocaleDateString()} · last used ${new Date(session.lastUsedAt).toLocaleString()}`));
+      const button = element('button', 'text-button', 'Sign out');
+      button.type = 'button';
+      button.addEventListener('click', async () => {
+        try {
+          const result = await api(`/api/sessions/${encodeURIComponent(session.id)}`, { method: 'DELETE' });
+          if (result.signedOutHere) { $('sessions-dialog').close(); showAuth('You signed out this browser.'); } else showSessions();
+        } catch (error) { toast(error.message); }
+      });
+      row.append(text, button);
+      list.append(row);
+    }
+  } catch (error) { list.replaceChildren(element('p', 'form-error', error.message)); }
 }
 
 $('message-form').addEventListener('submit', sendMessage);
@@ -686,6 +767,18 @@ $('room-form').addEventListener('submit', async (event) => {
   finally { button.disabled = false; }
 });
 $('auth-dialog').addEventListener('cancel', (event) => event.preventDefault());
+$('sessions-button').addEventListener('click', showSessions);
+$('sign-out-all').addEventListener('click', async () => {
+  try { await api('/api/sessions', { method: 'DELETE' }); $('sessions-dialog').close(); showAuth('Every browser was signed out.'); }
+  catch (error) { toast(error.message); }
+});
+$('copy-link-button').addEventListener('click', async () => {
+  try { await copyText(roomLink()); } catch (error) { toast(error.message); }
+});
+window.addEventListener('hashchange', () => {
+  const link = linkFromHash();
+  if (link.room) followLink(link.room, link.message).catch((error) => showError(error));
+});
 $('auth-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   $('auth-error').hidden = true;
@@ -694,7 +787,7 @@ $('auth-form').addEventListener('submit', async (event) => {
     await post('/api/session', { token: tokenInput.value.trim() });
     tokenInput.value = '';
     $('auth-dialog').close();
-    await authenticatedStart();
+    await authenticatedStart(linkFromHash());
   } catch (error) { $('auth-error').textContent = error.message; $('auth-error').hidden = false; }
 });
 setInterval(async () => {

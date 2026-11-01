@@ -1,7 +1,7 @@
 import './quiet.mjs';
 // Loaded dynamically so the warning filter in quiet.mjs is in place before node:sqlite initializes.
 const { DatabaseSync } = await import('node:sqlite');
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { allRooms } from './local-state.mjs';
 
@@ -13,6 +13,8 @@ const now = () => new Date().toISOString();
 const roomView = r => ({ id: r.id, name: r.name, description: r.description, createdAt: r.created_at });
 const messageView = r => ({ id: r.id, roomId: r.room_id, senderId: r.sender_id, senderName: r.sender_name,
   senderKind: r.sender_kind, body: r.body, createdAt: r.created_at, replyTo: r.reply_to, clientMessageId: r.client_message_id });
+
+export const hashToken = token => createHash('sha256').update(token).digest('hex');
 
 export const DEFAULT_ROOM = { id: 'general', name: 'General', description: 'A shared space for everyone in this workspace.' };
 
@@ -32,7 +34,13 @@ export class Store {
       CREATE INDEX IF NOT EXISTS messages_room_id ON messages(room_id, id);
       CREATE TABLE IF NOT EXISTS read_positions (agent_id TEXT NOT NULL REFERENCES agents(id),
         room_id TEXT NOT NULL REFERENCES rooms(id), cursor INTEGER NOT NULL DEFAULT 0,
-        PRIMARY KEY (agent_id, room_id));`);
+        PRIMARY KEY (agent_id, room_id));
+      CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, id TEXT NOT NULL UNIQUE, label TEXT NOT NULL,
+        created_at TEXT NOT NULL, last_used_at TEXT NOT NULL, expires_at TEXT NOT NULL);`);
+    // Columns added after 0.2: activity separate from bridge presence.
+    const columns = new Set(this.db.prepare('PRAGMA table_info(agents)').all().map(c => c.name));
+    if (!columns.has('last_active_at')) this.db.exec('ALTER TABLE agents ADD COLUMN last_active_at TEXT');
+    if (!columns.has('last_active_via')) this.db.exec('ALTER TABLE agents ADD COLUMN last_active_via TEXT');
     for (const a of [{ id: 'you', name: 'You', kind: 'human' }, ...agents]) this.registerAgent(a);
     // A restarted server has no evidence of a connected bridge yet.
     this.db.exec('UPDATE agents SET connected=0');
@@ -70,6 +78,7 @@ export class Store {
       const connected = Boolean(a.connected && a.last_seen && Date.now() - Date.parse(a.last_seen) < 45000);
       const registered = agentAccess.get(a.id);
       return { id: a.id, name: a.name, kind: a.kind, status: connected ? 'connected' : 'offline', lastSeen: a.last_seen, connected,
+        lastActiveAt: a.last_active_at ?? null, lastActiveVia: a.last_active_via ?? null,
         ...(me.owner ? { roomIds: registered.roomIds ?? null, access: allRooms(registered) ? 'all' : 'selected' } : {}) };
     });
     return { me: { id: me.id, name: me.name, kind: me.kind, owner: me.owner }, rooms, agents, mode: 'local', toolsConnected: agents.some(a => a.connected) };
@@ -130,6 +139,43 @@ export class Store {
   heartbeat(agentId, connected = true) {
     this.db.prepare('UPDATE agents SET last_seen=?,connected=? WHERE id=?').run(now(), connected ? 1 : 0, agentId);
   }
+
+  // Any authenticated agent request counts as activity, whether or not a bridge is heartbeating.
+  touch(agentId, via = 'api') {
+    this.db.prepare('UPDATE agents SET last_active_at=?,last_active_via=? WHERE id=?').run(now(), via, agentId);
+  }
+
+  // Browser sessions survive restarts. Only a SHA-256 of the cookie value is stored.
+  createSession(token, label, ttlMs) {
+    const at = Date.now();
+    const id = randomUUID().slice(0, 8);
+    this.db.prepare('DELETE FROM sessions WHERE expires_at<?').run(new Date(at).toISOString());
+    this.db.prepare('INSERT INTO sessions(token_hash,id,label,created_at,last_used_at,expires_at) VALUES(?,?,?,?,?,?)')
+      .run(hashToken(token), id, label, new Date(at).toISOString(), new Date(at).toISOString(), new Date(at + ttlMs).toISOString());
+    return id;
+  }
+
+  // Returns the session, sliding its expiry forward when it was last refreshed more than refreshMs ago.
+  useSession(token, ttlMs, refreshMs) {
+    const row = this.db.prepare('SELECT * FROM sessions WHERE token_hash=?').get(hashToken(token));
+    if (!row) return null;
+    const at = Date.now();
+    if (Date.parse(row.expires_at) <= at) { this.db.prepare('DELETE FROM sessions WHERE token_hash=?').run(row.token_hash); return null; }
+    let refreshed = false;
+    if (at - Date.parse(row.last_used_at) > refreshMs) {
+      this.db.prepare('UPDATE sessions SET last_used_at=?,expires_at=? WHERE token_hash=?').run(new Date(at).toISOString(), new Date(at + ttlMs).toISOString(), row.token_hash);
+      refreshed = true;
+    }
+    return { id: row.id, refreshed };
+  }
+
+  sessions() {
+    return this.db.prepare('SELECT id,label,created_at,last_used_at,expires_at FROM sessions WHERE expires_at>? ORDER BY last_used_at DESC').all(now())
+      .map(r => ({ id: r.id, label: r.label, createdAt: r.created_at, lastUsedAt: r.last_used_at, expiresAt: r.expires_at }));
+  }
+
+  deleteSession(id) { return this.db.prepare('DELETE FROM sessions WHERE id=?').run(id).changes > 0; }
+  deleteAllSessions() { this.db.exec('DELETE FROM sessions'); }
 
   createRoom(name, description, id = randomUUID()) {
     if (this.db.prepare('SELECT id FROM rooms WHERE name=? COLLATE NOCASE').get(name)) fail(409, 'A room with that name already exists.');
