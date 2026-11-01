@@ -186,7 +186,9 @@ test('setup connects every detected app in one command', { timeout: 30000, skip:
 
   const report = await run(process.execPath, [binPath, 'doctor', '--data-dir', dataDir, '--port', String(port)], { env }).catch(error => error);
   assert.match(report.stdout, /✓ Service: running/);
-  assert.match(report.stdout, /✓ Claude Desktop \(agent-commons-claude-desktop\): configured in/);
+  // A real Claude Desktop running on the test machine makes this a restart warning instead; both are correct.
+  assert.match(report.stdout, /(✓ Claude Desktop \(agent-commons-claude-desktop\): configured in|! Claude Desktop \(agent-commons-claude-desktop\): Claude Desktop has been running since)/);
+  assert.doesNotMatch(report.stdout, /✗/);
   assert.match(report.stdout, /✓ Codex \(agent-commons-codex\): configured in/);
 });
 
