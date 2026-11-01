@@ -1,4 +1,5 @@
 // Shared fixture: a workspace with two all-room agents (claude, codex) and three rooms (general, project, handoffs).
+import { after } from 'node:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -17,8 +18,16 @@ export async function seededServer({ dataDir, port = 0 } = {}) {
   return app;
 }
 
+// Temp folders are removed once every test in the file has finished and closed its servers. Removing one from a
+// test's own cleanup could run before that test's server closes (hooks run in the order they were added), and
+// Windows refuses to delete an open database, which then skipped the server's close and kept the process alive.
+const leftovers = [];
+after(async () => {
+  for (const dir of leftovers) await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }).catch(() => {});
+});
+
 export async function tempDataDir(t, prefix = 'agent-commons-') {
   const dataDir = await mkdtemp(join(tmpdir(), prefix));
-  t.after(() => rm(dataDir, { recursive: true, force: true }));
+  leftovers.push(dataDir);
   return dataDir;
 }

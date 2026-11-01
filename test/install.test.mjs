@@ -8,6 +8,9 @@ import { createServer } from 'node:net';
 import { join, dirname } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { installJson, installToml, tomlBlock, detectClients, appStartTime, restartAdvice, clientTargets } from '../src/install.mjs';
+
+// Tests must never open a real browser.
+process.env.AGENT_COMMONS_NO_BROWSER = '1';
 import { CommonsClient, friendlyClientName, parseOptions } from '../src/mcp.mjs';
 import { stableRuntime } from '../src/runtime.mjs';
 import { binPath } from '../src/paths.mjs';
@@ -32,7 +35,7 @@ test('JSON install keeps every other setting, writes a backup, and is a no-op th
   for (const key of Object.keys(before)) if (key !== 'mcpServers') assert.deepEqual(parsed[key], before[key]);
   assert.deepEqual(parsed.mcpServers.other, before.mcpServers.other);
   assert.ok(after.startsWith(original.slice(0, original.indexOf('"mcpServers"'))), 'Text before mcpServers is byte-for-byte unchanged.');
-  assert.equal((await stat(file)).mode & 0o777, 0o644, 'File mode is preserved.');
+  if (process.platform !== 'win32') assert.equal((await stat(file)).mode & 0o777, 0o644, 'File mode is preserved.');
 
   const second = await installJson(file, 'agent-commons-claude-desktop', entry);
   assert.equal(second.status, 'unchanged');
@@ -160,8 +163,10 @@ test('setup connects every detected app in one command', { timeout: 30000, skip:
   const dataDir = join(home, 'workspace');
   const port = await freePort();
   const url = `http://127.0.0.1:${port}`;
-  await mkdir(join(home, '.config', 'Claude'), { recursive: true });
-  await writeFile(join(home, '.config', 'Claude', 'claude_desktop_config.json'), JSON.stringify({ preferences: { keep: true } }, null, 2) + '\n');
+  // Claude Desktop keeps its config in a different place on each OS; ask the installer where.
+  const claudeConfig = clientTargets({ home, platform: process.platform, env: { XDG_CONFIG_HOME: join(home, '.config') } })['claude-desktop'].file;
+  await mkdir(dirname(claudeConfig), { recursive: true });
+  await writeFile(claudeConfig, JSON.stringify({ preferences: { keep: true } }, null, 2) + '\n');
   await mkdir(join(home, '.codex'));
   t.after(async () => {
     const { stdout } = await run('ps', ['-eo', 'pid,args']).catch(() => ({ stdout: '' }));
@@ -173,7 +178,7 @@ test('setup connects every detected app in one command', { timeout: 30000, skip:
   assert.match(stdout, /Found: Claude Desktop, Codex/);
   assert.match(stdout, /\+ Claude Desktop: added agent-commons-claude-desktop in/);
   assert.match(stdout, /\+ Codex: added agent-commons-codex in/);
-  const claude = JSON.parse(await readFile(join(home, '.config', 'Claude', 'claude_desktop_config.json'), 'utf8'));
+  const claude = JSON.parse(await readFile(claudeConfig, 'utf8'));
   assert.deepEqual(claude.preferences, { keep: true });
   const server = claude.mcpServers['agent-commons-claude-desktop'];
   assert.equal(server.args[server.args.indexOf('--agent') + 1], 'claude-desktop');
