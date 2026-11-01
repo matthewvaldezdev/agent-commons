@@ -21,7 +21,13 @@ export async function stableRuntime(dataDir, { from = packageDir, env = process.
       await cp(resolve(from, entry), resolve(staging, entry), { recursive: true }).catch(error => { if (error.code !== 'ENOENT') throw error; });
     }
     await rm(target, { recursive: true, force: true });
-    await rename(staging, target);
+    try { await rename(staging, target); }
+    catch (error) {
+      // Another process copied it at the same moment; theirs is as good as ours.
+      await rm(staging, { recursive: true, force: true });
+      const now = await readFile(resolve(target, 'package.json'), 'utf8').then(text => JSON.parse(text).version, () => null);
+      if (now !== version) throw error;
+    }
   }
   return paths(target);
 }

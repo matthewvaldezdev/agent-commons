@@ -122,3 +122,13 @@ test('browser labels are readable', () => {
   assert.equal(browserLabel('Mozilla/5.0 (Windows NT 10.0) Chrome/130 Safari/537 Edg/130'), 'Edge on Windows');
   assert.equal(browserLabel(undefined), 'Browser on this computer');
 });
+
+test('rotating the owner key or signing out everywhere cancels sign-in codes minted before it', async t => {
+  const f = await boot(t);
+  const early = (await f.call('/api/signin-codes', { auth: f.owner(), method: 'POST', body: {} })).body.code;
+  await f.call('/api/owner/rotate', { auth: f.owner(), method: 'POST', body: {} });
+  assert.equal((await f.call('/api/session', { method: 'POST', body: { code: early } })).status, 401);
+  const second = (await f.call('/api/signin-codes', { auth: f.owner(), method: 'POST', body: {} })).body.code;
+  await f.call('/api/sessions', { auth: f.owner(), method: 'DELETE' });
+  assert.equal((await f.call('/api/session', { method: 'POST', body: { code: second } })).status, 401);
+});

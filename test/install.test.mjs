@@ -208,3 +208,59 @@ test('the web UI can set up a client for the owner, and agents cannot', { skip: 
   assert.equal((await post(app.credentials.ownerToken, { agentId: 'claude', client: 'cursor' })).body.status, 'unchanged');
   assert.equal((await post(app.credentials.ownerToken, { agentId: 'claude', client: 'nope' })).status, 400);
 });
+
+test('TOML install keeps comments, line endings and final newline, and refuses inline entries', async t => {
+  const dir = await tempDataDir(t, 'commons-toml-edges-');
+  const file = join(dir, 'config.toml');
+  await writeFile(file, '[mcp_servers."agent-commons-codex"]\r\ncommand = "old"\r\nargs = []\r\n\r\n# Fast profile, keep this comment\r\n[profiles.fast]\r\nmodel = "mini"\r\n');
+  assert.equal((await installToml(file, 'agent-commons-codex', entry)).status, 'updated');
+  const text = await readFile(file, 'utf8');
+  assert.ok(text.includes('\r\n\r\n# Fast profile, keep this comment\r\n[profiles.fast]'), 'The comment above the next table survives.');
+  assert.ok(!/[^\r]\n/.test(text), 'Line endings stay CRLF.');
+  assert.ok(text.endsWith('\r\n'));
+  assert.equal((await installToml(file, 'agent-commons-codex', entry)).status, 'unchanged');
+
+  const atEnd = join(dir, 'end.toml');
+  await writeFile(atEnd, 'model = "x"\n[mcp_servers."agent-commons-codex"]\ncommand = "old"\nargs = []');
+  await installToml(atEnd, 'agent-commons-codex', entry);
+  assert.match(await readFile(atEnd, 'utf8'), /command = "\/usr\/bin\/node"\nargs = \[.*\]$/);
+
+  const sub = join(dir, 'sub.toml');
+  await writeFile(sub, '[mcp_servers."agent-commons-codex"]\ncommand = "old"\nargs = []\n\n[mcp_servers."agent-commons-codex".env]\nX = "1"\n');
+  await installToml(sub, 'agent-commons-codex', entry);
+  assert.match(await readFile(sub, 'utf8'), /\[mcp_servers\."agent-commons-codex"\.env\]\nX = "1"\n$/, 'A sub-table of our entry is kept.');
+
+  for (const inline of ['[mcp_servers]\n"agent-commons-codex" = { command = "x" }\n', 'mcp_servers.agent-commons-codex = { command = "x" }\n']) {
+    const f = join(dir, `inline-${inline.length}.toml`);
+    await writeFile(f, inline);
+    await assert.rejects(installToml(f, 'agent-commons-codex', entry), /form this tool does not edit/);
+    assert.equal(await readFile(f, 'utf8'), inline);
+  }
+});
+
+test('setup will not edit settings unattended without --yes, and skips Claude Desktop when the extension is installed', { timeout: 30000, skip: process.platform === 'win32' && 'process lookup differs on Windows' }, async t => {
+  const home = await tempDataDir(t, 'commons-unattended-');
+  const config = join(home, '.config', 'Claude', 'claude_desktop_config.json');
+  await mkdir(join(home, '.config', 'Claude', 'Claude Extensions', 'local.mcpb.matthew-valdez.agent-commons'), { recursive: true });
+  await writeFile(config, '{}\n');
+  const env = { ...process.env, HOME: home, XDG_CONFIG_HOME: join(home, '.config'), PATH: dirname(process.execPath), AGENT_COMMONS_NO_BROWSER: '1' };
+  const refused = await run(process.execPath, [binPath, 'setup', '--client', 'claude-desktop', '--data-dir', join(home, 'ws'), '--port', '1'], { env }).catch(error => error);
+  assert.equal(refused.code, 1);
+  assert.match(refused.stdout, /add --yes/);
+  assert.equal(await readFile(config, 'utf8'), '{}\n', 'Nothing was edited.');
+  const { installClient } = await import('../src/install.mjs');
+  const viaExtension = await installClient('claude-desktop', 'agent-commons-x', entry, { home, platform: 'linux', env: {} });
+  assert.equal(viaExtension.status, 'unchanged');
+  assert.equal(viaExtension.extension, true);
+  assert.equal(await readFile(config, 'utf8'), '{}\n', 'No duplicate entry next to the extension.');
+});
+
+test('on Windows the claude command line is quoted as one string for cmd.exe', async () => {
+  const { runClaude } = await import('../src/install.mjs');
+  let seen;
+  await runClaude('C:\\Users\\John Smith\\AppData\\Roaming\\npm\\claude.cmd', ['mcp', 'add', 'k', '--', 'C:\\Program Files\\nodejs\\node.exe', '100%'], { platform: 'win32', env: {}, runner: async (...args) => { seen = args; return { stdout: '' }; } });
+  assert.equal(seen[0], 'cmd.exe');
+  assert.deepEqual(seen[1].slice(0, 3), ['/d', '/s', '/c']);
+  assert.equal(seen[1][3], '""C:\\Users\\John Smith\\AppData\\Roaming\\npm\\claude.cmd" "mcp" "add" "k" "--" "C:\\Program Files\\nodejs\\node.exe" "100"^%"""');
+  assert.equal(seen[2].windowsVerbatimArguments, true);
+});

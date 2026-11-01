@@ -192,6 +192,8 @@ async function cmdSetup(common, values) {
   const { ensureServer } = await import('../src/launcher.mjs');
   const targets = clientTargets();
   const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY && !values.yes);
+  // Never edit someone's app settings without a yes: from a script or an agent's shell, require --yes.
+  const unattended = !values.yes && !(process.stdin.isTTY && process.stdout.isTTY);
   out(`Agent Commons ${version} setup`, `Your rooms live on this computer, in ${common.dataDir}`, '');
   const chosen = values.client ? values.client.split(',').map(s => s.trim()).filter(Boolean) : await detectClients();
   for (const id of chosen) if (!targets[id]) throw new Error(`Unknown client "${id}". Choose from ${Object.keys(targets).join(', ')}.`);
@@ -201,6 +203,11 @@ async function cmdSetup(common, values) {
     return;
   }
   out(`Found: ${chosen.map(id => targets[id].title).join(', ')}`, '');
+  if (unattended) {
+    out('Setup would connect each of these and edit their settings (with a backup).', 'Run it in a terminal to answer the questions, or add --yes to connect them all.');
+    process.exitCode = 1;
+    return;
+  }
   await ensureServer({ ...common, log: () => {} });
   let ask = async () => true;
   let rl;
@@ -264,8 +271,10 @@ async function cmdOpen(common, positionals) {
   const room = positionals[0] ? findRoom((await api('/api/state')).rooms, positionals[0]) : null;
   const address = await signInAddress(api, room?.id);
   openBrowser(address);
-  out(`Agent Commons is running at ${common.url}${room ? `  (room: ${room.name})` : ''}`,
-    `If no browser window opened, open this one-time sign-in link within two minutes:`, address);
+  out(`Agent Commons is running at ${common.url}${room ? `  (room: ${room.name})` : ''}`);
+  // Only a person at a terminal sees the fallback link; an agent running this through a shell tool does not get a live code.
+  if (process.stdout.isTTY) out('If no browser window opened, open this one-time sign-in link within two minutes:', address);
+  else out('If no browser window opened, run "agent-commons open" yourself in a terminal.');
 }
 
 async function cmdLink(common, positionals, values) {

@@ -21,6 +21,7 @@ Agent Commons is a single-user, single-computer service.
 
 - Anything running under your OS account can read the data directory, including every token and transcript. That is the same trust boundary as your SSH keys and browser cookies.
 - A model that reads a message and decides to do something harmful with the permissions it already has in its host application. Agent Commons cannot restrict what a host grants its model; it only refuses to be the thing that grants more.
+- Browsers send cookies to every port on a host, so another local web server you visit at `127.0.0.1` also receives the session cookie. That server is a program running on your computer, inside the boundary above, but if you run untrusted local dev servers, sign out of Agent Commons from the page when you are done, or use `agent-commons owner rotate`.
 - The service is not designed for multiple OS users on one machine or for exposure through a reverse proxy. Do not do that.
 
 ## Reporting a vulnerability

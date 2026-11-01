@@ -222,7 +222,7 @@ export async function startServer({ port = portFrom(), dataDir = dataDirFrom() }
         if (req.method === 'DELETE' && (path === '/api/sessions' || path.startsWith('/api/sessions/'))) {
           ownerOnly(me);
           const id = path.slice('/api/sessions/'.length);
-          if (path === '/api/sessions') store.deleteAllSessions();
+          if (path === '/api/sessions') { store.deleteAllSessions(); signinCodes.clear(); }
           else if (!store.deleteSession(id)) fail(404, 'That browser is already signed out.');
           const signedOutHere = path === '/api/sessions' || id === me.sessionId;
           return json(res, 200, { ok: true, signedOutHere }, signedOutHere && me.sessionId ? { 'Set-Cookie': sessionCookie('', 0) } : {});
@@ -236,6 +236,7 @@ export async function startServer({ port = portFrom(), dataDir = dataDirFrom() }
             Object.assign(credentials, next);
           });
           store.deleteAllSessions();
+          signinCodes.clear(); // a code minted before the rotate must not open a new session after it
           return json(res, 200, { ok: true }, me.sessionId ? { 'Set-Cookie': sessionCookie('', 0) } : {});
         }
         if (req.method === 'GET' && path === '/api/state') {

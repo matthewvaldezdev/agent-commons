@@ -3,7 +3,9 @@ import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { binPath, version } from './paths.mjs';
+import { existsSync } from 'node:fs';
+import { delimiter } from 'node:path';
+import { binPath, version, MIN_NODE } from './paths.mjs';
 
 export async function health(url, timeout = 1000) {
   try {
@@ -37,11 +39,25 @@ export async function waitForHealth(url, { timeoutMs = 8000, intervalMs = 150 } 
 }
 
 // Spawns `agent-commons serve` as a detached background process that outlives the caller.
-export function spawnDetached({ port, dataDir, nodePath = process.execPath }) {
+// Inside an app with a bundled Node too old for node:sqlite, prefer a node on PATH that is new enough.
+function serverNode() {
+  const [major, minor] = process.versions.node.split('.').map(Number);
+  const recent = major > MIN_NODE[0] || (major === MIN_NODE[0] && minor >= MIN_NODE[1]);
+  if (!process.versions.electron || recent) return process.execPath;
+  for (const dir of (process.env.PATH || '').split(delimiter).filter(Boolean)) {
+    for (const name of process.platform === 'win32' ? ['node.exe'] : ['node']) {
+      const candidate = resolve(dir, name);
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return process.execPath;
+}
+
+export function spawnDetached({ port, dataDir, nodePath = serverNode() }) {
   const child = spawn(nodePath, [binPath, 'serve', '--port', String(port), '--data-dir', dataDir], {
     detached: true, stdio: 'ignore', windowsHide: true,
     // Inside an Electron host (e.g. a Claude Desktop extension), execPath is the app binary; this makes it behave as plain Node.
-    env: { ...process.env, AGENT_COMMONS_PORT: String(port), AGENT_COMMONS_DATA_DIR: dataDir, ...(process.versions.electron ? { ELECTRON_RUN_AS_NODE: '1' } : {}) },
+    env: { ...process.env, AGENT_COMMONS_PORT: String(port), AGENT_COMMONS_DATA_DIR: dataDir, ...(process.versions.electron && nodePath === process.execPath ? { ELECTRON_RUN_AS_NODE: '1' } : {}) },
   });
   child.unref();
   return child;

@@ -7,7 +7,7 @@ import { homedir } from 'node:os';
 import { resolve, basename } from 'node:path';
 import { health, sameWorkspace } from './launcher.mjs';
 import { MIN_NODE, version } from './paths.mjs';
-import { clientTargets, restartAdvice, findOnPath } from './install.mjs';
+import { clientTargets, restartAdvice, findOnPath, runClaude, hasDesktopExtension } from './install.mjs';
 
 const run = promisify(execFile);
 const exists = path => access(path).then(() => true, () => false);
@@ -81,7 +81,7 @@ export async function doctor({ dataDir, url, agentId, home = homedir(), env = pr
     if (target.format === 'cli') {
       const claude = await findOnPath('claude', { platform, env });
       if (!claude) continue;
-      const listed = await run(claude, ['mcp', 'list'], { env, timeout: 15000 }).then(r => r.stdout, () => '');
+      const listed = await runClaude(claude, ['mcp', 'list'], { platform, env, timeout: 15000 }).then(r => r.stdout, () => '');
       const line = listed.split('\n').find(l => l.includes('agent-commons'));
       if (line) add(/✓|connected/i.test(line) ? 'ok' : 'warn', target.title, line.trim());
       continue;
@@ -103,10 +103,16 @@ export async function doctor({ dataDir, url, agentId, home = homedir(), env = pr
       if (script && !(await exists(script))) { add('fail', label, `the bridge script is gone: ${script}. Run "agent-commons setup" again.`); continue; }
       if (credentialFile && !(await exists(credentialFile))) { add('fail', label, `the connection file is missing: ${credentialFile}. Run "agent-commons setup" again.`); continue; }
       if (entryAgent && credentials && !credentials.agents.some(a => a.id === entryAgent)) { add('fail', label, `points at identity "${entryAgent}", which no longer exists. Run "agent-commons setup" again.`); continue; }
-      const advice = await restartAdvice(id, target.file, { platform, env, home });
-      add(advice?.needed && !target.cli ? 'fail' : 'ok', label, advice?.needed && !target.cli ? advice.message : `configured in ${target.file}`);
+      // A connected bridge proves the app loaded the entry. Otherwise the file times are only a hint: apps and people
+      // edit these files for other reasons, so a possible stale app is a warning, not a failure.
+      const live = state?.agents.find(a => a.id === entryAgent);
+      if (live?.connected) { add('ok', label, `configured in ${target.file}, bridge connected`); continue; }
+      const advice = target.cli ? null : await restartAdvice(id, target.file, { platform, env, home });
+      add(advice?.needed ? 'warn' : 'ok', label, advice?.needed ? `${advice.message} (If you already did, ignore this.)` : `configured in ${target.file}`);
     }
   }
+
+  if (await hasDesktopExtension({ home, env, platform })) add('ok', 'Claude Desktop extension', 'installed. Enable it in Settings > Extensions if its tools do not appear.');
 
   // Claude Desktop writes one log per MCP server; the last lines usually say exactly why a server did not load.
   const logDir = platform === 'darwin' ? resolve(home, 'Library', 'Logs', 'Claude') : resolve(targets['claude-desktop'].file, '..', 'logs');

@@ -1,7 +1,7 @@
 // Writes an Agent Commons entry into an MCP client's own configuration, the way a person would by hand,
 // but without the risky part: every other setting is kept, a timestamped backup is written beside the file,
 // the write is atomic, and running it twice changes nothing.
-import { readFile, writeFile, rename, copyFile, stat, mkdir, unlink, access } from 'node:fs/promises';
+import { readFile, writeFile, rename, copyFile, stat, mkdir, unlink, access, readdir } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { homedir } from 'node:os';
@@ -19,7 +19,7 @@ export function clientTargets({ platform = process.platform, env = process.env, 
     : platform === 'win32' ? resolve(appData(env, home), 'Claude') : resolve(env.XDG_CONFIG_HOME || resolve(home, '.config'), 'Claude');
   const codexHome = env.CODEX_HOME || resolve(home, '.codex');
   return {
-    'claude-desktop': { title: 'Claude Desktop', format: 'json', file: resolve(claudeDir, 'claude_desktop_config.json'), detect: [claudeDir], app: 'claude-desktop' },
+    'claude-desktop': { title: 'Claude Desktop', format: 'json', file: resolve(claudeDir, 'claude_desktop_config.json'), detect: [claudeDir], app: 'claude-desktop', extensions: resolve(claudeDir, 'Claude Extensions') },
     'claude-code': { title: 'Claude Code', format: 'cli', command: 'claude', detect: [resolve(home, '.claude.json'), resolve(home, '.claude')], cli: true },
     codex: { title: 'Codex', format: 'toml', file: resolve(codexHome, 'config.toml'), detect: [codexHome], cli: true },
     cursor: { title: 'Cursor', format: 'json', file: resolve(home, '.cursor', 'mcp.json'), detect: [resolve(home, '.cursor')], app: 'cursor' },
@@ -97,27 +97,42 @@ export async function installJson(file, key, entry, { now } = {}) {
 const tomlString = value => JSON.stringify(value);
 export const tomlBlock = (key, entry) => `[mcp_servers.${tomlString(key)}]\ncommand = ${tomlString(entry.command)}\nargs = [${entry.args.map(tomlString).join(', ')}]\n`;
 
-// Codex: one [mcp_servers."key"] table in config.toml, replaced in place or appended. Other tables are untouched.
+// Codex: one [mcp_servers."key"] table in config.toml, replaced in place or appended. Other tables, comments,
+// the file's line endings and its final newline are kept. An entry written some other way is left for a person.
 export async function installToml(file, key, entry, { now } = {}) {
   const { text, mode } = await readExisting(file);
-  const block = tomlBlock(key, entry);
   const source = text ?? '';
-  const lines = source.split('\n');
+  const eol = source.includes('\r\n') ? '\r\n' : '\n';
+  const lines = source.split(/\r?\n/);
+  const block = tomlBlock(key, entry).trimEnd().split('\n');
   const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const header = new RegExp(`^\\s*\\[mcp_servers\\.(?:"${escaped}"|'${escaped}'|${escaped})\\]\\s*(#.*)?$`);
+  const quotedKey = `(?:"${escaped}"|'${escaped}'|${escaped})`;
+  const header = new RegExp(`^\\s*\\[mcp_servers\\.${quotedKey}\\]\\s*(#.*)?$`);
+  // An entry written as an inline table (under [mcp_servers], or as mcp_servers.key = {...}) is not ours to rewrite.
+  let inServersTable = false;
+  for (const line of lines) {
+    if (/^\s*\[/.test(line)) { inServersTable = /^\s*\[mcp_servers\]\s*(#.*)?$/.test(line); continue; }
+    if (new RegExp(`^\\s*mcp_servers\\.${quotedKey}\\s*=`).test(line) || (inServersTable && new RegExp(`^\\s*${quotedKey}\\s*=`).test(line))) {
+      throw new Error(`${file} already defines ${key} in a form this tool does not edit. Remove that entry, then run this again.`);
+    }
+  }
   const start = lines.findIndex(line => header.test(line));
   let next;
   let status;
   if (start === -1) {
-    next = `${source}${source && !source.endsWith('\n') ? '\n' : ''}${source.trim() ? '\n' : ''}${block}`;
+    const body = source.replace(/(\r?\n)+$/, '');
+    next = (body ? `${body}${eol}${eol}` : '') + block.join(eol) + eol;
     status = 'added';
   } else {
     let end = lines.findIndex((line, i) => i > start && /^\s*\[/.test(line));
     if (end === -1) end = lines.length;
-    const current = lines.slice(start, end).join('\n').trim();
-    if (current === block.trim()) return { status: 'unchanged', file };
-    const after = lines.slice(end);
-    next = [...lines.slice(0, start), ...block.trimEnd().split('\n'), ...(after.length && after[0].trim() ? [''] : []), ...after].join('\n');
+    // Comments and blank lines just above the next table belong to that table.
+    let last = end;
+    while (last - 1 > start && /^\s*(#.*)?$/.test(lines[last - 1])) last--;
+    const current = lines.slice(start, last).join('\n').trim();
+    if (current === block.join('\n').trim()) return { status: 'unchanged', file };
+    next = [...lines.slice(0, start), ...block, ...lines.slice(last)].join(eol);
+    if (source.endsWith(eol) && !next.endsWith(eol)) next += eol;
     status = 'updated';
   }
   const saved = text === null ? null : await backup(file, now);
@@ -125,11 +140,19 @@ export async function installToml(file, key, entry, { now } = {}) {
   return { status, file, backup: saved };
 }
 
+// Runs the claude CLI. On Windows it is claude.cmd, which needs cmd.exe; quote the whole line the way Node's own
+// shell option does, so paths with spaces survive /s and % is not expanded.
+export function runClaude(claude, args, { platform = process.platform, env = process.env, runner = run, timeout = 30000 } = {}) {
+  if (platform !== 'win32') return runner(claude, args, { env, timeout });
+  const quote = arg => `"${String(arg).replace(/"/g, '""').replace(/%/g, '"^%"')}"`;
+  return runner(env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `"${[claude, ...args].map(quote).join(' ')}"`], { env, timeout, windowsVerbatimArguments: true });
+}
+
 // Claude Code keeps user-scope servers in ~/.claude.json, which it rewrites while running, so use its own CLI.
 export async function installClaudeCode(key, entry, { platform = process.platform, env = process.env, runner = run } = {}) {
   const claude = await findOnPath('claude', { platform, env });
   if (!claude) return { status: 'manual', reason: 'The claude command was not found on PATH.' };
-  const call = args => platform === 'win32' ? runner('cmd.exe', ['/d', '/s', '/c', claude, ...args], { env }) : runner(claude, args, { env });
+  const call = args => runClaude(claude, args, { platform, env, runner });
   const existing = await call(['mcp', 'get', key]).then(r => r.stdout, () => null);
   if (existing !== null && entry.args.every(arg => existing.includes(arg)) && existing.includes(entry.command)) return { status: 'unchanged', file: 'claude mcp (user scope)' };
   if (existing !== null) await call(['mcp', 'remove', '--scope', 'user', key]).catch(() => {});
@@ -137,9 +160,16 @@ export async function installClaudeCode(key, entry, { platform = process.platfor
   return { status: existing === null ? 'added' : 'updated', file: 'claude mcp (user scope)' };
 }
 
+// True when the Agent Commons Claude Desktop extension is installed, so a config entry would load it twice.
+export async function hasDesktopExtension(options = {}) {
+  const dir = clientTargets(options)['claude-desktop'].extensions;
+  return (await readdir(dir).catch(() => [])).some(name => /agent-commons/i.test(name));
+}
+
 export async function installClient(client, key, entry, options = {}) {
   const target = clientTargets(options)[client];
   if (!target) throw new Error(`No installer for ${client}.`);
+  if (client === 'claude-desktop' && await hasDesktopExtension(options)) return { status: 'unchanged', file: 'the Agent Commons extension', extension: true, title: target.title };
   if (target.format === 'json') return { ...await installJson(target.file, key, entry, options), title: target.title };
   if (target.format === 'toml') return { ...await installToml(target.file, key, entry, options), title: target.title };
   return { ...await installClaudeCode(key, entry, options), title: target.title };

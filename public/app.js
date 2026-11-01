@@ -386,7 +386,11 @@ async function loadOlder() {
 }
 
 async function focusMessage(id) {
-  for (let page = 0; page < 50 && !ui.messages.some((message) => message.id === id) && ui.hasOlder && (ui.messages[0]?.id || 0) > id; page++) await loadOlder();
+  for (let page = 0; page < 50 && !ui.messages.some((message) => message.id === id) && ui.hasOlder && (ui.messages[0]?.id || 0) > id; page++) {
+    const before = ui.messages[0]?.id;
+    await loadOlder();
+    if (ui.messages[0]?.id === before) break; // loadOlder made no progress (error, search, or room switch)
+  }
   const row = $(`message-${id}`);
   if (!row) { toast('That message is not in this room.'); return; }
   row.scrollIntoView({ block: 'center' });
@@ -794,6 +798,8 @@ $('copy-link-button').addEventListener('click', async () => {
   try { await copyText(roomLink()); } catch (error) { toast(error.message); }
 });
 window.addEventListener('hashchange', () => {
+  // A sign-in link pasted into an open tab: start over so the code is redeemed and removed from the address.
+  if (/(^|[#&])(signin|token)=/.test(window.location.hash)) { window.location.reload(); return; }
   const link = linkFromHash();
   if (link.room) followLink(link.room, link.message).catch((error) => showError(error));
 });
