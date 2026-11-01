@@ -503,6 +503,10 @@ function selectSetupTab(client, focus = false) {
   $('client-file').textContent = c.file;
   $('client-format').textContent = client === 'codex' ? 'TOML' : client === 'claude-code' ? 'Terminal command' : 'JSON';
   $('client-config').textContent = c.snippet;
+  $('install-button').hidden = client === 'generic';
+  $('install-button').textContent = `Set it up in ${c.title} for me`;
+  $('install-button').dataset.client = client;
+  $('install-result').hidden = true;
   if (focus) $(`${client}-tab`).focus();
 }
 
@@ -737,6 +741,20 @@ document.querySelectorAll('[data-copy]').forEach((button) => button.addEventList
   catch (error) { toast(error.message); }
 }));
 $('cancel-reply').addEventListener('click', () => { ui.replies.delete(ui.room); ui.pendingSend = null; renderReply(); $('message-input').focus(); });
+$('install-button').addEventListener('click', async () => {
+  const button = $('install-button');
+  const client = button.dataset.client;
+  button.disabled = true;
+  try {
+    const result = await post('/api/install', { agentId: ui.connectAgent, client });
+    const title = setupConfig?.clients[client]?.title || client;
+    const lines = result.status === 'manual' ? [`${result.reason} Copy the entry below into ${title} instead.`]
+      : [result.status === 'unchanged' ? `${title} was already set up.` : `Added to ${result.file}.`, result.backup ? `Your previous settings were saved to ${result.backup}.` : '', result.advice || ''];
+    $('install-result').textContent = lines.filter(Boolean).join(' ');
+    $('install-result').hidden = false;
+  } catch (error) { $('install-result').textContent = error.message; $('install-result').hidden = false; }
+  finally { button.disabled = false; }
+});
 $('connect-agent').addEventListener('change', () => showConnect($('connect-agent').value));
 $('connect-dialog').addEventListener('close', () => { ui.connectVersion += 1; });
 $('add-agent-button').addEventListener('click', () => showAgentSettings());

@@ -128,7 +128,7 @@ test('real Claude/Codex stdio bridges keep identities, strict framing, explicit 
   await claude.initialize();
   const listed = await claude.request('tools/list');
   const names = listed.result.tools.map((tool) => tool.name);
-  const expected = ['commons_list_rooms', 'commons_read_messages', 'commons_send_message', 'commons_mark_read', 'commons_wait_for_messages'];
+  const expected = ['commons_list_rooms', 'commons_read_messages', 'commons_send_message', 'commons_mark_read', 'commons_open_room', 'commons_wait_for_messages'];
   for (const required of expected.slice(0, 4)) assert.ok(names.includes(required));
   assert.ok(names.every((name) => expected.includes(name)), 'Expose only the documented local messaging tools.');
   const rooms = await claude.call('commons_list_rooms');

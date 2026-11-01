@@ -4,6 +4,12 @@ import { resolve } from 'node:path';
 
 export const randomToken = () => randomBytes(32).toString('base64url');
 export const agentKinds = ['claude', 'codex', 'cursor', 'gemini', 'copilot', 'chatgpt', 'other'];
+export function guessKind(name) {
+  const lower = String(name).toLowerCase();
+  for (const kind of agentKinds) if (kind !== 'other' && lower.includes(kind)) return kind;
+  if (lower.includes('gpt')) return 'chatgpt';
+  return 'other';
+}
 export const validAgentId = id => typeof id === 'string' && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(id) && id !== 'you';
 // An identity without a roomIds array may read and post in every room, including rooms created later.
 export const allRooms = agent => !Array.isArray(agent.roomIds);

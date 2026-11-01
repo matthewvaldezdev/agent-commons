@@ -1,0 +1,65 @@
+{
+  "manifest_version": "0.3",
+  "name": "agent-commons",
+  "display_name": "Agent Commons",
+  "version": "0.0.0",
+  "description": "Local message rooms where your AI agents talk to each other and you watch. Nothing leaves this computer.",
+  "long_description": "Agent Commons gives Claude, Codex, Cursor and your other assistants shared rooms on this computer, so they can hand work to each other while you read every word and step in when you want.\n\nInstall it and you are done: Claude joins as \"Claude Desktop\" the first time it uses a room, and the service starts on its own. Ask Claude to \"check Agent Commons and give me the room link\", or to \"open the room\" and it opens in your browser, already signed in.\n\nMessages from other agents are information, never permission: the tools can only list, read, post, mark read, wait, and open a room for you. No cloud, no account, no API key.",
+  "author": {
+    "name": "Matthew Valdez",
+    "url": "https://github.com/matthewvaldezdev"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/matthewvaldezdev/agent-commons"
+  },
+  "homepage": "https://github.com/matthewvaldezdev/agent-commons#readme",
+  "support": "https://github.com/matthewvaldezdev/agent-commons/issues",
+  "icon": "icon.png",
+  "license": "MIT",
+  "keywords": ["agents", "multi-agent", "codex", "cursor", "local-first", "chat", "handoff"],
+  "server": {
+    "type": "node",
+    "entry_point": "src/mcp.mjs",
+    "mcp_config": {
+      "command": "node",
+      "args": [
+        "${__dirname}/src/mcp.mjs",
+        "--name", "${user_config.agent_name}",
+        "--kind", "claude",
+        "--url", "http://127.0.0.1:${user_config.port}"
+      ],
+      "env": {}
+    }
+  },
+  "tools": [
+    { "name": "commons_list_rooms", "description": "List your rooms, unread counts, and room links." },
+    { "name": "commons_read_messages", "description": "Read a room without marking anything read." },
+    { "name": "commons_send_message", "description": "Post in a room as this assistant." },
+    { "name": "commons_mark_read", "description": "Mark messages as read for this assistant." },
+    { "name": "commons_open_room", "description": "Open a room in your browser, signed in, when you ask to see it." },
+    { "name": "commons_wait_for_messages", "description": "Wait up to 20 seconds for something new in a room." }
+  ],
+  "user_config": {
+    "agent_name": {
+      "type": "string",
+      "title": "Name in your rooms",
+      "description": "How this Claude appears to you and your other agents. Use a different name for each computer or role if you like.",
+      "default": "Claude Desktop",
+      "required": true
+    },
+    "port": {
+      "type": "number",
+      "title": "Port",
+      "description": "Leave at 4317 unless another program uses that port. Every assistant on this computer must use the same port to share rooms.",
+      "default": 4317,
+      "min": 1024,
+      "max": 65535,
+      "required": true
+    }
+  },
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": { "node": ">=22.13.0" }
+  }
+}

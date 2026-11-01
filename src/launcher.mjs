@@ -40,7 +40,8 @@ export async function waitForHealth(url, { timeoutMs = 8000, intervalMs = 150 } 
 export function spawnDetached({ port, dataDir, nodePath = process.execPath }) {
   const child = spawn(nodePath, [binPath, 'serve', '--port', String(port), '--data-dir', dataDir], {
     detached: true, stdio: 'ignore', windowsHide: true,
-    env: { ...process.env, AGENT_COMMONS_PORT: String(port), AGENT_COMMONS_DATA_DIR: dataDir },
+    // Inside an Electron host (e.g. a Claude Desktop extension), execPath is the app binary; this makes it behave as plain Node.
+    env: { ...process.env, AGENT_COMMONS_PORT: String(port), AGENT_COMMONS_DATA_DIR: dataDir, ...(process.versions.electron ? { ELECTRON_RUN_AS_NODE: '1' } : {}) },
   });
   child.unref();
   return child;

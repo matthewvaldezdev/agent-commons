@@ -8,6 +8,7 @@ import { Store, AppError, fail, hashToken } from './store.mjs';
 import { ensureCredentials, saveCredentials, writeConnectionCredential, randomToken, agentKinds, allRooms, validAgentId, slugify } from './local-state.mjs';
 import { packageDir, mcpPath, version, dataDirFrom, portFrom, requireNode } from './paths.mjs';
 import { buildSnippets, agentPrompt, CLIENTS, clientFile } from './connect.mjs';
+import { stableRuntime } from './runtime.mjs';
 
 const nowDate = () => new Date().toISOString().slice(0, 10);
 const agentView = agent => ({ id: agent.id, name: agent.name, kind: agent.kind, roomIds: agent.roomIds ?? null, access: allRooms(agent) ? 'all' : 'selected' });
@@ -177,9 +178,10 @@ export async function startServer({ port = portFrom(), dataDir = dataDirFrom() }
   }
   async function connectionInfo(agent, platform = process.platform) {
     const credentialFile = await writeConnectionCredential(dataDir, agent);
-    const snippets = buildSnippets({ agentId: agent.id, credentialFile, url });
+    const runtime = await stableRuntime(dataDir);
+    const snippets = buildSnippets({ agentId: agent.id, credentialFile, url, bridge: runtime.mcp });
     const clients = Object.fromEntries(Object.keys(CLIENTS).map(id => [id, { title: CLIENTS[id].title, file: clientFile(id, platform), snippet: snippets[id] }]));
-    return { agent: agentView(agent), nodePath: process.execPath, mcpPath, dataDir, url, credentialFile, mcpConfig: snippets.entry, serverKey: snippets.key, clients, prompt: agentPrompt(agent, url) };
+    return { agent: agentView(agent), nodePath: process.execPath, mcpPath: runtime.mcp, dataDir, url, credentialFile, mcpConfig: snippets.entry, serverKey: snippets.key, clients, prompt: agentPrompt(agent, url) };
   }
   const server = createServer(async (req, res) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -350,6 +352,21 @@ export async function startServer({ port = portFrom(), dataDir = dataDirFrom() }
           const agent = credentials.agents.find(a => a.id === agentId);
           if (!agent) fail(404, 'That agent does not exist.');
           return json(res, 200, await connectionInfo(agent));
+        }
+        if (req.method === 'POST' && path === '/api/install') {
+          // The "set it up for me" button: writes this identity into a client's own config, with a backup. Owner only.
+          ownerOnly(me);
+          const body = await bodyJSON(req); allowedKeys(body, ['agentId', 'client']);
+          const { installClient, restartAdvice, clientTargets } = await import('./install.mjs');
+          if (!Object.hasOwn(clientTargets(), body.client)) fail(400, 'Choose a client this computer can set up.');
+          const agent = credentials.agents.find(a => a.id === body.agentId);
+          if (!agent) fail(404, 'That agent does not exist.');
+          const info = await connectionInfo(agent);
+          let result;
+          try { result = await installClient(body.client, info.serverKey, info.mcpConfig); }
+          catch (error) { fail(409, error.message); }
+          const advice = result.status === 'manual' ? null : await restartAdvice(body.client, result.status === 'unchanged' ? null : result.file);
+          return json(res, 200, { status: result.status, file: result.file ?? null, backup: result.backup ?? null, reason: result.reason ?? null, advice: advice?.message ?? null });
         }
         if (req.method === 'GET' && path === '/api/events') {
           ownerOnly(me);

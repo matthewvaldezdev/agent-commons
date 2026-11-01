@@ -4,7 +4,9 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dataDirFrom, DEFAULT_PORT, requireNode, version } from './paths.mjs';
-import { ensureServer } from './launcher.mjs';
+import { ensureServer, health } from './launcher.mjs';
+import { agentKinds, guessKind } from './local-state.mjs';
+import { openBrowser } from './browser.mjs';
 
 export const PROTOCOL_VERSIONS = ['2024-11-05', '2025-03-26', '2025-06-18', '2025-11-25'];
 const MAX_LINE = 256 * 1024;
@@ -39,6 +41,12 @@ export const TOOL_DEFINITIONS = [
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   },
   {
+    name: 'commons_open_room',
+    description: 'Open a room in the operator\'s web browser on this computer, already signed in, so they can watch or step in. Use it only when the operator asks to see the conversation. It returns the room link and grants nothing else.',
+    inputSchema: schema({ roomId: roomProperty, messageId: { type: 'integer', minimum: 1, description: 'Optional message to scroll to and highlight.' } }, ['roomId']),
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  },
+  {
     name: 'commons_wait_for_messages',
     description: 'Wait up to 20 seconds for newer messages in one room. This does not wake another model or respond automatically. Avoid indefinite polling; return control when your current task is finished.',
     inputSchema: schema({ roomId: roomProperty, after: cursorProperty, seconds: { type: 'integer', minimum: 1, maximum: 20 }, limit: { type: 'integer', minimum: 1, maximum: 100 } }, ['roomId', 'after']),
@@ -46,7 +54,7 @@ export const TOOL_DEFINITIONS = [
   },
 ];
 
-const FLAGS = ['--agent', '--data-dir', '--credential-file', '--url'];
+const FLAGS = ['--agent', '--data-dir', '--credential-file', '--url', '--name', '--kind'];
 const BOOLEAN_FLAGS = ['--no-autostart'];
 
 export function parseOptions(args = process.argv.slice(2), env = process.env) {
@@ -56,6 +64,8 @@ export function parseOptions(args = process.argv.slice(2), env = process.env) {
     credentialFile: env.AGENT_COMMONS_CREDENTIAL_FILE ? resolve(env.AGENT_COMMONS_CREDENTIAL_FILE) : undefined,
     url: env.AGENT_COMMONS_URL || `http://127.0.0.1:${DEFAULT_PORT}`,
     autostart: env.AGENT_COMMONS_AUTOSTART !== '0',
+    name: env.AGENT_COMMONS_AGENT_NAME || undefined,
+    kind: env.AGENT_COMMONS_AGENT_KIND || undefined,
   };
   let dataDirSelected = false;
   for (let i = 0; i < args.length; i++) {
@@ -63,15 +73,23 @@ export function parseOptions(args = process.argv.slice(2), env = process.env) {
     if (flag === '--help' || flag === '-h') return { ...options, help: true };
     if (BOOLEAN_FLAGS.includes(flag)) { options.autostart = false; continue; }
     if (!FLAGS.includes(flag) || !args[i + 1] || args[i + 1].startsWith('--')) {
-      throw new Error('Use --agent ID [--credential-file PATH | --data-dir PATH] [--url http://127.0.0.1:4317] [--no-autostart].');
+      throw new Error('Use --agent ID --credential-file PATH, or --name "Display name" to connect without setup, plus [--data-dir PATH] [--url http://127.0.0.1:4317] [--no-autostart].');
     }
     const value = args[++i];
     if (flag === '--agent') options.agent = value;
     else if (flag === '--data-dir') { options.dataDir = resolve(value); dataDirSelected = true; }
     else if (flag === '--credential-file') options.credentialFile = resolve(value);
+    else if (flag === '--name') options.name = value;
+    else if (flag === '--kind') options.kind = value;
     else options.url = value;
   }
-  if (typeof options.agent !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(options.agent) || options.agent === 'you') {
+  // Without --agent the bridge provisions its own identity on first use: by --name, or by the name the client reports.
+  if (options.agent === undefined) {
+    if (options.credentialFile) throw new Error('A connection file belongs to one identity: pass its --agent ID too.');
+    options.provision = true;
+    if (options.name !== undefined && (!options.name.trim() || options.name.length > 80)) throw new Error('--name must be 1 to 80 characters.');
+    if (options.kind !== undefined && !agentKinds.includes(options.kind)) throw new Error(`--kind must be one of ${agentKinds.join(', ')}.`);
+  } else if (typeof options.agent !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(options.agent) || options.agent === 'you') {
     throw new Error('Choose the agent ID shown in the owner’s connection setup using --agent ID.');
   }
   if (dataDirSelected && options.credentialFile) throw new Error('Use either --credential-file or --data-dir, not both.');
@@ -107,10 +125,67 @@ export function validateToolInput(name, input) {
   return input;
 }
 
+// Friendly identity names for the clients people actually use, from the clientInfo they send at initialize.
+export function friendlyClientName(clientInfo) {
+  const raw = typeof clientInfo?.name === 'string' ? clientInfo.name.trim() : '';
+  if (/claude[-_ ]?code/i.test(raw)) return 'Claude Code';
+  if (/claude/i.test(raw)) return 'Claude Desktop';
+  if (/codex/i.test(raw)) return 'Codex';
+  if (/cursor/i.test(raw)) return 'Cursor';
+  if (/windsurf/i.test(raw)) return 'Windsurf';
+  if (/gemini/i.test(raw)) return 'Gemini CLI';
+  if (/copilot|vscode|visual studio code/i.test(raw)) return 'Copilot';
+  const cleaned = raw.replace(/[^\p{L}\p{N} ._-]/gu, '').replace(/[-_]+/g, ' ').trim().slice(0, 60);
+  return cleaned ? cleaned.replace(/\b\p{L}/gu, c => c.toUpperCase()) : 'Agent';
+}
+
 export class CommonsClient {
-  constructor(options, { diagnostic = () => {} } = {}) { this.options = options; this.diagnostic = diagnostic; this.starting = null; }
+  constructor(options, { diagnostic = () => {} } = {}) { this.options = options; this.diagnostic = diagnostic; this.starting = null; this.provisioning = null; this.clientName = null; }
+
+  // The owner credential, read only for a moment by this local process to set up its own identity or open the operator's browser.
+  // It is never sent to the model, written to a log, or put in a URL.
+  async ownerRequest(path, { method = 'GET', body } = {}) {
+    let credentials;
+    try { credentials = JSON.parse(await readFile(resolve(this.options.dataDir, 'credentials.json'), 'utf8')); }
+    catch { throw new Error('Agent Commons could not read its workspace. Run "agent-commons doctor" for details.'); }
+    const response = await fetch(`${this.options.url}${path}`, { method, redirect: 'error', signal: AbortSignal.timeout(5000),
+      headers: { Authorization: `Bearer ${credentials.ownerToken}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    const value = await response.json().catch(() => ({}));
+    if (!response.ok) { const error = new Error(value.error || `Agent Commons request failed (${response.status}).`); error.status = response.status; throw error; }
+    return value;
+  }
+
+  async serviceUp() {
+    if (await health(this.options.url)) return;
+    if (!this.options.autostart) throw new Error(`Agent Commons is not running at ${this.options.url}. Run "agent-commons serve", or "agent-commons service install" to keep it running.`);
+    await this.ensureServer();
+  }
+
+  // Creates (or finds) the identity named for this client the first time a tool needs it. Nothing to paste, no setup step.
+  provision() {
+    if (!this.provisioning) {
+      this.provisioning = (async () => {
+        const name = (this.options.name || this.clientName || 'Agent').trim();
+        const kind = this.options.kind || guessKind(name);
+        await this.serviceUp();
+        const find = async () => (await this.ownerRequest('/api/state')).agents.find(a => a.name.toLowerCase() === name.toLowerCase());
+        let agent = await find();
+        if (!agent) {
+          try { agent = (await this.ownerRequest('/api/agents', { method: 'POST', body: { name, kind, roomIds: null } })).agent; }
+          catch (error) { if (error.status !== 409) throw error; agent = await find(); }
+          if (agent) this.diagnostic(`Created the identity "${name}" (${agent.id}).`);
+        }
+        if (!agent) throw new Error(`Could not set up the identity "${name}".`);
+        const info = await this.ownerRequest(`/api/connect?agent=${encodeURIComponent(agent.id)}`);
+        this.options.agent = info.agent.id;
+        this.options.credentialFile = info.credentialFile;
+      })().catch(error => { this.provisioning = null; throw error; });
+    }
+    return this.provisioning;
+  }
 
   async agentToken() {
+    if (this.options.provision && !this.options.credentialFile) await this.provision();
     let credentials;
     try { credentials = JSON.parse(await readFile(this.options.credentialFile || resolve(this.options.dataDir, 'credentials.json'), 'utf8')); }
     catch (error) {
@@ -177,6 +252,14 @@ export class CommonsClient {
     }
     if (name === 'commons_send_message') return this.request('/api/messages', { method: 'POST', body: input, signal });
     if (name === 'commons_mark_read') return this.request('/api/read', { method: 'POST', body: input, signal });
+    if (name === 'commons_open_room') {
+      // Checks this identity may see the room, then signs the operator's browser in with a single-use code.
+      const { roomUrl } = await this.request(`/api/messages?${new URLSearchParams({ room: input.roomId, limit: '1' })}`, { signal });
+      const { code } = await this.ownerRequest('/api/signin-codes', { method: 'POST', body: {} });
+      const link = input.messageId ? `${roomUrl}&message=${input.messageId}` : roomUrl;
+      const opened = openBrowser(link.replace('/#', `/#signin=${encodeURIComponent(code)}&`));
+      return { opened, url: link, note: opened ? 'Opened in the operator\'s browser.' : 'Could not open a browser here; give the operator the url.' };
+    }
     const params = new URLSearchParams({ room: input.roomId, limit: String(input.limit ?? 100) });
     if (input.after !== undefined) params.set('after', String(input.after));
     if (input.before !== undefined) params.set('before', String(input.before));
@@ -209,7 +292,8 @@ export async function startBridge(options, { input = process.stdin, output = pro
   const enableHeartbeat = () => {
     if (heartbeatTimer) return;
     // Bring the service up as soon as the host connects, so the first tool call finds it ready.
-    if (options.autostart) client.agentToken().then(() => client.ensureServer()).catch(() => {}).then(beat);
+    // A bridge that sets up its own identity does so now, so the operator sees it appear as soon as the client connects.
+    if (options.autostart) client.agentToken().then(() => client.ensureServer()).catch(error => { if (options.provision) diagnostic.write(`Agent Commons: ${error.message}\n`); }).then(beat);
     else void beat();
     heartbeatTimer = setInterval(beat, 20000);
     heartbeatTimer.unref();
@@ -231,6 +315,7 @@ export async function startBridge(options, { input = process.stdin, output = pro
     if (request.method === 'initialize') {
       if (!request.params || typeof request.params !== 'object' || typeof request.params.protocolVersion !== 'string') { errorResponse(request.id, -32602, 'initialize requires a protocolVersion.'); return; }
       initialized = true;
+      if (!client.clientName) client.clientName = friendlyClientName(request.params.clientInfo);
       result(request.id, {
         protocolVersion: PROTOCOL_VERSIONS.includes(request.params.protocolVersion) ? request.params.protocolVersion : PROTOCOL_VERSIONS.at(-1),
         capabilities: { tools: { listChanged: false } }, serverInfo: { name: 'agent-commons', version },
@@ -287,7 +372,7 @@ export async function runBridge(args = process.argv.slice(2)) {
   requireNode();
   const options = parseOptions(args);
   if (options.help) {
-    process.stderr.write('Agent Commons MCP bridge: agent-commons mcp --agent ID [--credential-file PATH | --data-dir PATH] [--url http://127.0.0.1:4317] [--no-autostart]\n');
+    process.stderr.write('Agent Commons MCP bridge: agent-commons mcp [--name "Display name" [--kind KIND] | --agent ID --credential-file PATH] [--data-dir PATH] [--url http://127.0.0.1:4317] [--no-autostart]\n');
     return;
   }
   const bridge = await startBridge(options);

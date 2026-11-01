@@ -6,14 +6,15 @@ import { promisify } from 'node:util';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { binPath } from './paths.mjs';
+import { stableRuntime } from './runtime.mjs';
 
 const run = promisify(execFile);
 const LABEL = 'dev.agent-commons.server';
 
 const escapeXml = value => value.replace(/[<>&'"]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' })[c]);
 
-function plan({ platform = process.platform, port, dataDir, nodePath = process.execPath, home = homedir() }) {
-  const args = [binPath, 'serve', '--port', String(port), '--data-dir', dataDir];
+function plan({ platform = process.platform, port, dataDir, nodePath = process.execPath, home = homedir(), bin = binPath }) {
+  const args = [bin, 'serve', '--port', String(port), '--data-dir', dataDir];
   const logDir = resolve(dataDir, 'logs');
   if (platform === 'darwin') {
     const file = resolve(home, 'Library', 'LaunchAgents', `${LABEL}.plist`);
@@ -72,7 +73,8 @@ WantedBy=default.target
 }
 
 export async function installService(options) {
-  const p = plan(options);
+  // Point the service at a copy that survives npm cleaning its npx cache.
+  const p = plan({ ...options, bin: (await stableRuntime(options.dataDir)).bin });
   await mkdir(p.logDir, { recursive: true });
   await mkdir(resolve(p.file, '..'), { recursive: true });
   await writeFile(p.file, p.content);
